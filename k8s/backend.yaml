@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: storefront-obs-backend
+  namespace: storefront-obs
+  labels:
+    app: storefront-obs-backend
+spec:
+  replicas: 2
+  # 2 replicas mirrors Agoda's active-active DC pattern.
+  # Source: "we operate on active-active mode in our data centers
+  # for most of our API services" — Retry Storms article, Aug 2024
+  selector:
+    matchLabels:
+      app: storefront-obs-backend
+  template:
+    metadata:
+      labels:
+        app: storefront-obs-backend
+    spec:
+      containers:
+        - name: backend
+          image: YOUR_REGISTRY/storefront-obs-backend:latest
+          ports:
+            - containerPort: 8000
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "128Mi"
+            limits:
+              cpu: "250m"
+              # CPU requests = limits intentionally.
+              # Agoda's K8s migration article documented a service hitting
+              # CFS throttling at 43% CPU utilisation because thread bursts
+              # exhausted the quota window. Setting requests == limits
+              # eliminates the burst headroom that causes CFS stalls.
+              # Source: "Private Cloud and You" — Agoda Engineering, Nov 2022
+              memory: "256Mi"
+              # Memory limit is 2x request, not equal.
+              # Python has no off-heap memory issue (unlike JVM), so we
+              # don't need the tight JVM off-heap buffer described in the
+              # Kubernetes migration article. Standard 2x headroom is safe.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: storefront-obs-backend
+  namespace: storefront-obs
+spec:
+  selector:
+    app: storefront-obs-backend
+  ports:
+    - port: 8000
+      targetPort: 8000
