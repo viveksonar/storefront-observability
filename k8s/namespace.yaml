@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: storefront-obs
+  labels:
+    # Uncomment this line when Istio is installed on the cluster.
+    # This injects the Envoy sidecar automatically into all pods.
+    # In Agoda's stack, this is how Gatekeeper integrates via the
+    # Istio External Processor filter.
+    # Source: "How Agoda Handles Load Shedding" — June 2024
+    # istio-injection: enabled
