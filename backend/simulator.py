@@ -9,14 +9,18 @@ The five signals we track, all derived from the article:
 3. IO stream timeout events (bad S3 client connection exhaustion fix)
 4. Cross-DC vs same-DC traffic split (bandwidth throttling fix)
 5. expect:continue header detection rate (latency spike fix)
+
+Incident persistence: lifecycle hooks call incident_store so TPM evidence
+survives mode transitions and container restarts (SQLite).
 """
 
 import random
 import time
-import math
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
+
+import incident_store
 
 BACKEND_COUNT = 8          # VAST provides a pool of virtual IPs
 MAX_CONNECTIONS = 500      # Per-backend connection limit (realistic for VAST compute node)
@@ -45,6 +49,7 @@ class MetricSimulator:
         self.history: deque = deque(maxlen=60)
         self.backends = self._init_backends()
         self._last_tick_time = time.time()
+        self._active_incident_id: Optional[int] = None
 
     def _init_backends(self) -> List[Backend]:
         """
@@ -83,6 +88,20 @@ class MetricSimulator:
             self._simulate_cross_dc_throttling()
 
         self._record_history()
+        self._persist_incident_peaks()
+
+    def _persist_incident_peaks(self):
+        """Every simulated tick during an outage updates SQLite peak columns."""
+        if self.mode == "normal" or self._active_incident_id is None:
+            return
+        incident_store.record_incident_tick(self._active_incident_id, self)
+        # Lightweight timeline narration — avoids per-tick spam but documents sustained stress.
+        if self.tick > 0 and self.tick % 30 == 0:
+            incident_store.add_event(
+                self._active_incident_id,
+                "metric_snapshot",
+                f"Sustained degradation — simulation tick {self.tick}, peaks still accumulating",
+            )
 
     def _simulate_normal(self):
         """
@@ -107,7 +126,7 @@ class MetricSimulator:
         to resolve a single virtual IP and send ALL requests there.
         Microsoft DNS minimum TTL of 1 second means cache never refreshes
         fast enough under high-volume S3 workloads.
-        
+
         Source: "Applications tend to cache DNS results for arbitrary
         durations... one application with heavy storage usage might get
         routed to a single backend" — Storefront article, Feb 2026
@@ -134,7 +153,7 @@ class MetricSimulator:
         Bad S3 client failure: client does not fully read HTTP responses.
         Connections remain open indefinitely waiting to write to a full
         IO stream buffer. Two backends slowly approach the connection limit.
-        
+
         Source: "Some S3 clients often did not fully read their HTTP
         responses. This caused connections to remain open indefinitely,
         eventually exhausting the backend's connection limits."
@@ -163,11 +182,11 @@ class MetricSimulator:
         sends data cross-datacenter through the VAST cluster. This saturates
         the two dedicated cross-DC backends AND causes collateral latency
         on all backends sharing the same VAST cluster.
-        
-        Source: "Cross data center traffic... throttled, affecting the 
+
+        Source: "Cross data center traffic... throttled, affecting the
         performance of the vast cluster as a whole, even for other requests
         that were not cross data center." — Storefront article, Feb 2026
-        
+
         The fix (implemented in Storefront) was to configure distinct
         upstream pools for cross-DC traffic, isolating the blast radius.
         """
@@ -195,7 +214,7 @@ class MetricSimulator:
 
         # Load distribution score: 100 = perfectly even, 0 = all on one backend
         rps_values = [b.rps for b in self.backends]
-        max_rps = max(rps_values) if max(rps_values) > 0 else 1
+        max_rps = max(rps_values) if rps_values > 0 else 1
         ideal_rps = total_rps / len(self.backends)
         distribution_score = max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100)
 
@@ -211,6 +230,34 @@ class MetricSimulator:
         })
 
     def set_mode(self, mode: str):
+        """
+        Failure transitions open/close SQLite incidents so TPM timelines remain auditable.
+        """
+        old = self.mode
+
+        if mode == "normal":
+            self.mode = mode
+            self.tick = 0
+            if self._active_incident_id is not None:
+                incident_store.resolve_incident(self._active_incident_id, self)
+                self._active_incident_id = None
+            return
+
+        if old == "normal":
+            self.mode = mode
+            self.tick = 0
+            self._active_incident_id = incident_store.create_incident(mode)
+            return
+
+        if old != mode:
+            if self._active_incident_id is not None:
+                incident_store.resolve_incident(self._active_incident_id, self)
+                self._active_incident_id = None
+            self.mode = mode
+            self.tick = 0
+            self._active_incident_id = incident_store.create_incident(mode)
+            return
+
         self.mode = mode
         self.tick = 0
 
