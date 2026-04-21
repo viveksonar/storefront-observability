@@ -46,7 +46,8 @@ kind: Service
 metadata:
   name: storefront-obs-frontend
 spec:
-  type: LoadBalancer
+  # Traffic enters via Ingress (install-ingress-nginx.sh), not a public LB here.
+  type: ClusterIP
   selector:
     app: storefront-obs-frontend
   ports:
