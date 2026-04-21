@@ -2,6 +2,8 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+ENV INCIDENT_DB_PATH=/app/incidents.db
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

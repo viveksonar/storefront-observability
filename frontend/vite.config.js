@@ -10,6 +10,7 @@ export default defineConfig({
       '/metrics': { target: backend, changeOrigin: true },
       '/simulate': { target: backend, changeOrigin: true },
       '/health': { target: backend, changeOrigin: true },
+      '/incidents': { target: backend, changeOrigin: true },
     },
   },
 })
