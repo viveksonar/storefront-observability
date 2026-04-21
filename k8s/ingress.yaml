@@ -1,0 +1,40 @@
+# Host, TLS secret, and issuer come from ssl-params.env via Kustomize replacements.
+# Single entrypoint: ingress-nginx LoadBalancer — point DNS at ingress-nginx-controller IP.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: storefront-obs-ingress
+  annotations:
+    cert-manager.io/cluster-issuer: replaceme-cert-cluster-issuer
+    kubernetes.io/ingress.class: nginx
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - replaceme-ingress-host
+      secretName: replaceme-tls-secret-name
+  rules:
+    - host: replaceme-ingress-host
+      http:
+        paths:
+          - path: /metrics
+            pathType: Prefix
+            backend:
+              service:
+                name: storefront-obs-backend
+                port:
+                  number: 8000
+          - path: /simulate
+            pathType: Prefix
+            backend:
+              service:
+                name: storefront-obs-backend
+                port:
+                  number: 8000
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: storefront-obs-frontend
+                port:
+                  number: 80

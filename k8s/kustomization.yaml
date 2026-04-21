@@ -2,15 +2,59 @@
 # Override images for CI/registry:
 #   cd k8s && kustomize edit set image observability/backend=my.registry/backend:v1
 # Or edit the images: block below.
+#
+# TLS hostname, Secret name, ClusterIssuer: edit ssl-params.env.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 namespace: storefront-obs
 
+generatorOptions:
+  disableNameSuffixHash: true
+
+configMapGenerator:
+  - name: storefront-obs-ssl-params
+    envs:
+      - ssl-params.env
+
+replacements:
+  - source:
+      kind: ConfigMap
+      name: storefront-obs-ssl-params
+      fieldPath: data.INGRESS_HOST
+    targets:
+      - select:
+          kind: Ingress
+          name: storefront-obs-ingress
+        fieldPaths:
+          - spec.tls.0.hosts.0
+          - spec.rules.0.host
+  - source:
+      kind: ConfigMap
+      name: storefront-obs-ssl-params
+      fieldPath: data.TLS_SECRET_NAME
+    targets:
+      - select:
+          kind: Ingress
+          name: storefront-obs-ingress
+        fieldPaths:
+          - spec.tls.0.secretName
+  - source:
+      kind: ConfigMap
+      name: storefront-obs-ssl-params
+      fieldPath: data.CERT_CLUSTER_ISSUER
+    targets:
+      - select:
+          kind: Ingress
+          name: storefront-obs-ingress
+        fieldPaths:
+          - metadata.annotations.cert-manager\.io/cluster-issuer
+
 resources:
   - namespace.yaml
   - backend.yaml
   - frontend.yaml
+  - ingress.yaml
 
 # Logical image names → resolved at apply time (see backend.yaml / frontend.yaml).
 images:
