@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+
+# Local K8s deploy overrides (registry / tags notes)
+k8s/deploy.env
