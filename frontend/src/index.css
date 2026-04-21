@@ -1,0 +1,68 @@
+:root {
+  --bg: #080d18;
+  --surface: #0e1525;
+  --surface-2: #141e33;
+  --border: #1e2d4a;
+  --border-bright: #2a3f66;
+
+  --text: #e2e8f4;
+  --text-muted: #5a7098;
+  --text-dim: #3a5070;
+
+  --green: #00e88a;
+  --green-dim: #00e88a22;
+  --amber: #f5a623;
+  --amber-dim: #f5a62322;
+  --red: #ff3b5c;
+  --red-dim: #ff3b5c22;
+  --blue: #3d8cff;
+  --blue-dim: #3d8cff22;
+
+  --font-mono: 'IBM Plex Mono', monospace;
+  --font-ui: 'Syne', sans-serif;
+}
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle scan-line texture — ops terminal feel */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0,0,0,0.03) 2px,
+    rgba(0,0,0,0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+.mono { font-family: var(--font-mono); }
+
+/* Status colors */
+.status-healthy { color: var(--green); }
+.status-warning  { color: var(--amber); }
+.status-critical { color: var(--red); }
+.status-cross-dc { color: var(--blue); }
+
+@keyframes pulse-red {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-in { animation: fade-in 0.3s ease forwards; }
