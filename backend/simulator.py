@@ -35,6 +35,9 @@ TOTAL_RPS = 12000          # Agoda's data platform generates significant S3 traf
 # Forecast thresholds (leading indicator vs lagging saturation — Kafka capacity playbook)
 FORECAST_WARNING_CONN = int(MAX_CONNECTIONS * 0.65)    # 325
 FORECAST_CRITICAL_CONN = int(MAX_CONNECTIONS * 0.85)   # 425
+# Under steady baseline sim, connection regression is near-flat — use a floor rate so 2×/3×
+# what-if scenarios still produce distinct stress runway (Normal tab stays stable).
+FORECAST_WHATIF_MIN_CONN_PER_HOUR = 2.0
 
 # SLO: 99.5% good traffic → 0.5% error budget ≈ 21.6 minutes per 30-day month (Google SRE workbook style).
 SLO_DISTRIBUTION_THRESHOLD = 80.0
@@ -643,11 +646,15 @@ class MetricSimulator:
                 and rate_hour >= 2.0
             )
 
-            # Always expose runway hours from the regression slope when rate > 0.
-            # `is_growing` stays a separate signal (strong trend / noise filtered); do not strip hours when it is false.
+            # Normal scenario: raw regression. 2×/3×: same slope, but under baseline sim use a
+            # minimum drift so flat noise still yields comparable stress hours (tabs react visibly).
             hw_norm, hc_norm = _hours_pair_for_scenario(float(current), rate_hour, 1.0)
-            hw_2, hc_2 = _hours_pair_for_scenario(float(current), rate_hour, 2.0)
-            hw_3, hc_3 = _hours_pair_for_scenario(float(current), rate_hour, 3.0)
+            if simulator_mode == "normal":
+                spike_rate = max(rate_hour, FORECAST_WHATIF_MIN_CONN_PER_HOUR)
+            else:
+                spike_rate = rate_hour
+            hw_2, hc_2 = _hours_pair_for_scenario(float(current), spike_rate, 2.0)
+            hw_3, hc_3 = _hours_pair_for_scenario(float(current), spike_rate, 3.0)
 
             at_warning = current >= FORECAST_WARNING_CONN
             at_critical = current >= FORECAST_CRITICAL_CONN
@@ -673,6 +680,14 @@ class MetricSimulator:
                 "already_at_risk": at_warning or at_critical,
                 "already_at_risk_level": "critical" if at_critical else ("warning" if at_warning else None),
             })
+
+        # Baseline sim: hide only the "Normal traffic" runway — 2×/3× stay populated for what-if.
+        if simulator_mode == "normal":
+            for f in forecasts:
+                f["hours_to_warning"]["normal"] = None
+                f["hours_to_critical"]["normal"] = None
+                f["is_growing"] = False
+                f["growth_rate_per_hour"] = 0.0
 
         def _finite_min(vals: List[Optional[float]]) -> Optional[float]:
             nums = [v for v in vals if v is not None]
@@ -706,22 +721,6 @@ class MetricSimulator:
             {"normal": min_norm, "spike_2x": min_2, "spike_3x": min_3},
             most_b,
         )
-
-        # Baseline operation: no simulated failure — suppress regression runway so the UI stays
-        # "stable" (scenario buttons are what-ifs only; they do not change simulator mode).
-        # When a failure mode is active, expose full projections for Normal / 2× / 3× stress views.
-        if simulator_mode == "normal":
-            for f in forecasts:
-                f["hours_to_warning"] = {"normal": None, "spike_2x": None, "spike_3x": None}
-                f["hours_to_critical"] = {"normal": None, "spike_2x": None, "spike_3x": None}
-                f["is_growing"] = False
-                f["growth_rate_per_hour"] = 0.0
-            min_norm = min_2 = min_3 = None
-            most_b = None
-            recommendation = _fleet_recommendation(
-                {"normal": None, "spike_2x": None, "spike_3x": None},
-                None,
-            )
 
         return {
             "forecasts": forecasts,
