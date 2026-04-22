@@ -83,6 +83,17 @@ def get_history():
     return sim.get_history()
 
 
+@app.get("/metrics/forecast")
+def get_forecast():
+    """
+    Per-backend connection trend (linear regression) and hours to warning/critical.
+
+    Mirrors Agoda's Kafka capacity lesson: saturation is lagging — growth rate is leading.
+    Scenarios scale the trend (promotional 2×, major event 3×) like a manual Vulcan preview.
+    """
+    return sim.get_forecast()
+
+
 @app.get("/incidents")
 def list_incidents():
     """Last 20 incidents, newest first — persisted post-mortem index."""
