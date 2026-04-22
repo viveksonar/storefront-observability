@@ -5,10 +5,11 @@ metadata:
   labels:
     app: storefront-obs-backend
 spec:
-  replicas: 2
-  # 2 replicas mirrors Agoda's active-active DC pattern.
-  # Source: "we operate on active-active mode in our data centers
-  # for most of our API services" — Retry Storms article, Aug 2024
+  # In-memory MetricSimulator: all /metrics* and /simulate must hit the same process.
+  # With 2+ replicas, load balancing made “switch failure mode then open Forecast” look
+  # like a reset (POST on pod A, GET /metrics/forecast on pod B = still normal).
+  # Scale to 2+ only with session-affinity on the Service (see below) or shared state.
+  replicas: 1
   selector:
     matchLabels:
       app: storefront-obs-backend
@@ -61,6 +62,12 @@ kind: Service
 metadata:
   name: storefront-obs-backend
 spec:
+  # Sticky from the frontend pod (ClusterIP client) so if replicas>1, the same
+  # backend instance serves /simulate and all /metrics* for that path.
+  sessionAffinity: ClientIP
+  sessionAffinityConfig:
+    clientIP:
+      timeoutSeconds: 10800
   selector:
     app: storefront-obs-backend
   ports:

@@ -237,6 +237,26 @@ def resolve_incident(incident_id: int, sim: Any) -> None:
             conn.close()
 
 
+def resolve_all_active_incidents(sim: Any) -> int:
+    """
+    Close every row still marked active (e.g. operator 'Reset to normal').
+    Fetches ids under one lock, then resolves each so we never leave
+    stragglers if the in-memory incident id was out of sync with SQLite.
+    """
+    with _lock:
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                "SELECT id FROM incidents WHERE status = 'active' ORDER BY id ASC"
+            ).fetchall()
+            ids = [int(r["id"]) for r in rows]
+        finally:
+            conn.close()
+    for i in ids:
+        resolve_incident(i, sim)
+    return len(ids)
+
+
 def add_event(
     incident_id: int,
     event_type: str,

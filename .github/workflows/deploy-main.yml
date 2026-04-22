@@ -1,5 +1,5 @@
-# Deploy when `main` changes: build/push Docker images to DigitalOcean Container
-# Registry, then apply Kustomize manifests to your DOKS cluster.
+# Deploy when `main` changes: three stages — build images → push to DigitalOcean
+# Container Registry → apply Kustomize + rollout on DOKS.
 #
 # Required GitHub repository secrets:
 #   DIGITALOCEAN_ACCESS_TOKEN — API token with registry read/write + Kubernetes access
@@ -27,13 +27,111 @@ concurrency:
 env:
   REGISTRY: registry.digitalocean.com/storefront-obs-registry
   K8S_NAMESPACE: storefront-obs
+  BACKEND_IMG: storefront-backend
+  FRONTEND_IMG: storefront-frontend
 
 jobs:
-  build-push-deploy:
+  # ---------------------------------------------------------------------------
+  # 1. Build — compile Docker images locally (no registry credentials).
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.BACKEND_IMG }}:${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,scope=backend,mode=max
+
+      - name: Build frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: ${{ env.FRONTEND_IMG }}:${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,scope=frontend,mode=max
+
+      - name: Package images for push job
+        run: |
+          docker save "${{ env.BACKEND_IMG }}:${{ github.sha }}" "${{ env.FRONTEND_IMG }}:${{ github.sha }}" \
+            | gzip -1 > images.tar.gz
+          ls -lh images.tar.gz
+
+      - name: Upload image bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-images
+          path: images.tar.gz
+          retention-days: 2
+
+  # ---------------------------------------------------------------------------
+  # 2. Push — load bundle, tag, and push to DigitalOcean Container Registry.
+  # ---------------------------------------------------------------------------
+  push:
+    name: Push
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      contents: read
+    steps:
+      - name: Download image bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: docker-images
+
+      - name: Load images into Docker
+        run: gunzip -c images.tar.gz | docker load
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Log in to DigitalOcean Container Registry
+        run: doctl registry login --expiry-seconds 600
+
+      - name: Tag and push backend
+        run: |
+          docker tag "${{ env.BACKEND_IMG }}:${{ github.sha }}" "${{ env.REGISTRY }}/backend:latest"
+          docker tag "${{ env.BACKEND_IMG }}:${{ github.sha }}" "${{ env.REGISTRY }}/backend:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/backend:latest"
+          docker push "${{ env.REGISTRY }}/backend:${{ github.sha }}"
+
+      - name: Tag and push frontend
+        run: |
+          docker tag "${{ env.FRONTEND_IMG }}:${{ github.sha }}" "${{ env.REGISTRY }}/frontend:latest"
+          docker tag "${{ env.FRONTEND_IMG }}:${{ github.sha }}" "${{ env.REGISTRY }}/frontend:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/frontend:latest"
+          docker push "${{ env.REGISTRY }}/frontend:${{ github.sha }}"
+
+  # ---------------------------------------------------------------------------
+  # 3. Deploy — apply manifests and restart workloads to pull new :latest.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy
+    runs-on: ubuntu-latest
+    needs: push
+    permissions:
+      contents: read
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -46,39 +144,7 @@ jobs:
       - name: Save kubeconfig
         run: doctl kubernetes cluster kubeconfig save "${{ secrets.DIGITALOCEAN_CLUSTER_NAME }}"
 
-      - name: Log in to DigitalOcean Container Registry
-        run: doctl registry login --expiry-seconds 600
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Build and push backend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./backend
-          file: ./backend/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/backend:latest
-            ${{ env.REGISTRY }}/backend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Build and push frontend
-        uses: docker/build-push-action@v6
-        with:
-          context: ./frontend
-          file: ./frontend/Dockerfile
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ env.REGISTRY }}/frontend:latest
-            ${{ env.REGISTRY }}/frontend:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      - name: Deploy with Kustomize
+      - name: Apply Kustomize manifests
         run: kubectl apply -k k8s/
 
       - name: Rollout restart (pull fresh :latest)

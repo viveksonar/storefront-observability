@@ -91,6 +91,16 @@ def get_summary():
     """
     return sim.get_summary()
 
+
+@app.get("/metrics/clients")
+def get_client_metrics():
+    """
+    Simulated per-client S3 attribution — which internal service drives backend load.
+    FINUDP-style single pane (Jan 2026 article): answers 'whose client?' during incidents.
+    """
+    return sim.get_client_metrics()
+
+
 @app.post("/simulate/{failure_mode}")
 def trigger_failure(failure_mode: str):
     """
