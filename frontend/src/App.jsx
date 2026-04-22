@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import BackendGrid from './components/BackendGrid'
 import SummaryBar from './components/SummaryBar'
 import AnomalyPanel from './components/AnomalyPanel'
@@ -7,7 +7,42 @@ import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
 
-const API = ''  // proxied via vite — empty = same origin
+const API = ''  // same origin; dev: Vite proxy, prod: nginx → backend
+
+/** Safer than raw .json() — HTML 502/404 pages from nginx break JSON.parse */
+async function fetchJson(url) {
+  const res = await fetch(url)
+  const ct = (res.headers.get('content-type') || '').toLowerCase()
+  if (!ct.includes('application/json')) {
+    const snippet = (await res.text()).slice(0, 120)
+    throw new Error(`${url} → HTTP ${res.status}, expected JSON. ${snippet}`)
+  }
+  const data = await res.json()
+  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
+  return data
+}
+
+/** Retries transient prod failures (LB/nginx cold 502/503, brief connection drops). */
+async function fetchJsonWithRetry(url, maxAttempts = 3) {
+  let lastErr
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    try {
+      return await fetchJson(url)
+    } catch (e) {
+      lastErr = e
+      const msg = e?.message || String(e)
+      const retryable =
+        msg.includes('502') ||
+        msg.includes('503') ||
+        msg.includes('504') ||
+        msg.includes('Failed to fetch') ||
+        e?.name === 'TypeError'
+      if (!retryable || attempt === maxAttempts - 1) throw e
+      await new Promise((r) => setTimeout(r, 120 * (attempt + 1)))
+    }
+  }
+  throw lastErr
+}
 
 export default function App() {
   const [backends, setBackends]   = useState(null)
@@ -23,27 +58,60 @@ export default function App() {
   const [reportIncidentId, setReportIncidentId] = useState(null)
   const [reportMarkdown, setReportMarkdown] = useState('')
 
+  /** Only show the red banner after repeated critical failures — avoids flicker on single bad poll. */
+  const criticalFailStreakRef = useRef(0)
+
   const fetchAll = useCallback(async () => {
-    try {
-      const [b, s, a, h, incList, active] = await Promise.all([
-        fetch(`${API}/metrics/backends`).then(r => r.json()),
-        fetch(`${API}/metrics/summary`).then(r => r.json()),
-        fetch(`${API}/metrics/anomalies`).then(r => r.json()),
-        fetch(`${API}/metrics/history`).then(r => r.json()),
-        fetch(`${API}/incidents`).then(r => r.json()),
-        fetch(`${API}/incidents/active`).then(r => r.json()),
-      ])
-      setBackends(b)
+    const urls = [
+      `${API}/metrics/backends`,
+      `${API}/metrics/summary`,
+      `${API}/metrics/anomalies`,
+      `${API}/metrics/history`,
+      `${API}/incidents`,
+      `${API}/incidents/active`,
+    ]
+    const results = await Promise.allSettled(urls.map((u) => fetchJsonWithRetry(u)))
+
+    const val = (i) => (results[i].status === 'fulfilled' ? results[i].value : null)
+
+    const b = val(0)
+    const s = val(1)
+    const a = val(2)
+    const h = val(3)
+    const incList = val(4)
+    const active = results[5].status === 'fulfilled' ? results[5].value : undefined
+
+    if (b) setBackends(b)
+    if (s) {
       setSummary(s)
-      setAnomalies(a)
-      setHistory(h.history || [])
       setMode(s.mode)
-      setIncidents(Array.isArray(incList) ? incList : [])
-      setActiveIncident(active)
-      setLastUpdated(new Date())
+    }
+    if (a) setAnomalies(a)
+    if (h) setHistory(h.history || [])
+    if (incList !== null && incList !== undefined) setIncidents(Array.isArray(incList) ? incList : [])
+    if (active !== undefined) setActiveIncident(active)
+
+    const backendsOk = results[0].status === 'fulfilled'
+    const summaryOk = results[1].status === 'fulfilled'
+    const criticalOk = backendsOk && summaryOk
+
+    if (criticalOk) {
+      criticalFailStreakRef.current = 0
       setError(null)
-    } catch (e) {
-      setError('Cannot reach backend — is the API running? (Vite proxies to 127.0.0.1:8000 by default; set VITE_PROXY_TARGET if needed.)')
+      setLastUpdated(new Date())
+      return
+    }
+
+    criticalFailStreakRef.current += 1
+    const rejected = results
+      .map((r, i) => (r.status === 'rejected' ? `${urls[i]}: ${r.reason?.message || r.reason}` : null))
+      .filter(Boolean)
+    if (criticalFailStreakRef.current >= 2) {
+      const hint =
+        typeof window !== 'undefined' && window.location.port === '5173'
+          ? ' Local dev: run uvicorn on :8000; Vite must proxy /metrics, /simulate, /incidents.'
+          : ' Production: check backend pods, ingress → backend routes, and nginx API regex (frontend/nginx.conf).'
+      setError(`API degraded — ${rejected.slice(0, 2).join(' · ')} ${hint}`)
     }
   }, [])
 
