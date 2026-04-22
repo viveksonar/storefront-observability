@@ -3,11 +3,12 @@ import BackendGrid from './components/BackendGrid'
 import SummaryBar from './components/SummaryBar'
 import AnomalyPanel from './components/AnomalyPanel'
 import IncidentPanel from './components/IncidentPanel'
-import FailureControls from './components/FailureControls'
+import FailureModeDropdown from './components/FailureModeDropdown'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
 import ForecastTab from './components/ForecastTab'
 import ClientAttributionPanel from './components/ClientAttributionPanel'
+import SLOTab from './components/SLOTab'
 import { apiUrl, fetchJsonWithRetry } from './api.js'
 
 export default function App() {
@@ -26,6 +27,7 @@ export default function App() {
   const [reportIncidentId, setReportIncidentId] = useState(null)
   const [reportMarkdown, setReportMarkdown] = useState('')
   const [clientMetrics, setClientMetrics] = useState(null)
+  const [sloMetrics, setSloMetrics] = useState(null)
 
   /** Only show the red banner after repeated critical failures — avoids flicker on single bad poll. */
   const criticalFailStreakRef = useRef(0)
@@ -39,6 +41,7 @@ export default function App() {
       apiUrl('/metrics/history'),
       apiUrl('/incidents'),
       apiUrl('/incidents/active'),
+      apiUrl('/metrics/slo'),
     ]
     const results = await Promise.allSettled(urls.map((u) => fetchJsonWithRetry(u)))
 
@@ -51,6 +54,7 @@ export default function App() {
     const h = val(4)
     const incList = val(5)
     const active = results[6].status === 'fulfilled' ? results[6].value : undefined
+    const slo = val(7)
 
     if (b) setBackends(b)
     if (s) {
@@ -62,6 +66,7 @@ export default function App() {
     if (h) setHistory(h.history || [])
     if (incList !== null && incList !== undefined) setIncidents(Array.isArray(incList) ? incList : [])
     if (active !== undefined) setActiveIncident(active)
+    if (slo) setSloMetrics(slo)
 
     const backendsOk = results[0].status === 'fulfilled'
     const summaryOk = results[1].status === 'fulfilled'
@@ -187,18 +192,25 @@ export default function App() {
                 S3 load balancer health · VAST backend pool monitoring · 8 nodes
               </div>
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', paddingTop: 2 }}>
+            <div style={{ display: 'flex', alignItems: 'center', paddingTop: 2, flexWrap: 'wrap', gap: 8 }}>
               {tabBtn('dashboard', 'Live Dashboard')}
+              {tabBtn('slo', 'SLO Burn Rate')}
               {tabBtn('forecast', 'Forecast')}
+              {tabBtn('incidents', 'Incidents')}
             </div>
           </div>
-          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-            {error
-              ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
-              : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
-                  updated {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'} · polling 3s
-                </span>
-            }
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14, flexShrink: 0, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+            <div style={{ paddingTop: 2 }}>
+              <FailureModeDropdown currentMode={mode} onTrigger={triggerMode} />
+            </div>
+            <div style={{ textAlign: 'right', paddingTop: 6 }}>
+              {error
+                ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
+                : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+                    updated {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'} · polling 3s
+                  </span>
+              }
+            </div>
           </div>
         </div>
 
@@ -218,11 +230,20 @@ export default function App() {
                 activeIncident={activeIncident}
                 onViewReport={openReport}
               />
-              <FailureControls currentMode={mode} onTrigger={triggerMode} />
             </div>
           </div>
-        ) : (
+        ) : mainView === 'slo' ? (
+          <SLOTab data={sloMetrics} />
+        ) : mainView === 'forecast' ? (
           <ForecastTab />
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16, flex: 1, maxWidth: 720 }}>
+            <IncidentPanel
+              incidents={incidents}
+              activeIncident={activeIncident}
+              onViewReport={openReport}
+            />
+          </div>
         )}
 
       </div>
