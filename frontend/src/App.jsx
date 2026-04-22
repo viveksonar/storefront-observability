@@ -6,6 +6,7 @@ import IncidentPanel from './components/IncidentPanel'
 import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
+import ForecastTab from './components/ForecastTab'
 
 const API = ''  // same origin; dev: Vite proxy, prod: nginx → backend
 
@@ -45,6 +46,8 @@ async function fetchJsonWithRetry(url, maxAttempts = 3) {
 }
 
 export default function App() {
+  const [mainView, setMainView] = useState('dashboard')
+
   const [backends, setBackends]   = useState(null)
   const [summary, setSummary]     = useState(null)
   const [anomalies, setAnomalies] = useState(null)
@@ -152,34 +155,75 @@ export default function App() {
 
   const current = modeLabel[mode] || modeLabel.normal
 
+  const tabBtn = (id, label) => {
+    const active = mainView === id
+    return (
+      <button
+        type="button"
+        onClick={() => setMainView(id)}
+        style={{
+          fontFamily: 'var(--font-ui)',
+          fontSize: 13,
+          fontWeight: 600,
+          letterSpacing: '-0.02em',
+          padding: '6px 4px 10px',
+          marginRight: 16,
+          background: 'transparent',
+          border: 'none',
+          borderBottom: active ? '2px solid var(--green)' : '2px solid transparent',
+          color: active ? 'var(--text)' : 'var(--text-muted)',
+          cursor: 'pointer',
+          transition: 'color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease',
+          opacity: active ? 1 : 0.9,
+        }}
+      >
+        {label}
+      </button>
+    )
+  }
+
   return (
     <div style={{ position: 'relative', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
       <div style={{ minHeight: '100vh', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid var(--border)', paddingBottom: 14 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
-                Storefront Observability
-              </span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-                padding: '2px 8px', borderRadius: 3, border: '1px solid',
-                color: current.color, borderColor: current.color,
-                background: current.color + '15',
-                animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
-                letterSpacing: '0.05em'
-              }}>
-                {current.label}
-              </span>
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap',
+          borderBottom: '0.5px solid var(--border)',
+          paddingBottom: 14,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 28, flexWrap: 'wrap', flex: '1 1 auto' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
+                  Storefront Observability
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                  padding: '2px 8px', borderRadius: 3, border: '1px solid',
+                  color: current.color, borderColor: current.color,
+                  background: current.color + '15',
+                  animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
+                  letterSpacing: '0.05em'
+                }}>
+                  {current.label}
+                </span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                S3 load balancer health · VAST backend pool monitoring · 8 nodes
+              </div>
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              S3 load balancer health · VAST backend pool monitoring · 8 nodes
+            <div style={{ display: 'flex', alignItems: 'center', paddingTop: 2 }}>
+              {tabBtn('dashboard', 'Live Dashboard')}
+              {tabBtn('forecast', 'Forecast')}
             </div>
           </div>
-          <div style={{ textAlign: 'right' }}>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
             {error
               ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
               : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
@@ -189,29 +233,27 @@ export default function App() {
           </div>
         </div>
 
-        {/* Summary bar */}
-        {summary && <SummaryBar summary={summary} />}
+        {mainView === 'dashboard' && summary && <SummaryBar summary={summary} />}
 
-        {/* Main content */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
-
-          {/* Left: backend grid */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {backends && <BackendGrid backends={backends} />}
-            <TimelineChart history={history} />
+        {mainView === 'dashboard' ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {backends && <BackendGrid backends={backends} />}
+              <TimelineChart history={history} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {anomalies && <AnomalyPanel anomalies={anomalies} />}
+              <IncidentPanel
+                incidents={incidents}
+                activeIncident={activeIncident}
+                onViewReport={openReport}
+              />
+              <FailureControls currentMode={mode} onTrigger={triggerMode} />
+            </div>
           </div>
-
-          {/* Right: anomalies, incidents, controls */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {anomalies && <AnomalyPanel anomalies={anomalies} />}
-            <IncidentPanel
-              incidents={incidents}
-              activeIncident={activeIncident}
-              onViewReport={openReport}
-            />
-            <FailureControls currentMode={mode} onTrigger={triggerMode} />
-          </div>
-        </div>
+        ) : (
+          <ForecastTab />
+        )}
 
       </div>
 
