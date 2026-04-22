@@ -341,8 +341,12 @@ class MetricSimulator:
         # Load distribution score: 100 = perfectly even, 0 = all on one backend
         rps_values = [b.rps for b in self.backends]
         max_rps = max(rps_values) if rps_values else 1
-        ideal_rps = total_rps / len(self.backends)
-        distribution_score = max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100)
+        n_b = len(self.backends)
+        ideal_rps = (total_rps / n_b) if n_b else 0.0
+        if ideal_rps <= 1e-12:
+            distribution_score = 100.0
+        else:
+            distribution_score = max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100)
 
         self.history.append({
             "tick": self.tick,
@@ -497,8 +501,12 @@ class MetricSimulator:
 
             rps_values = [b.rps for b in self.backends]
             max_rps = max(rps_values) if rps_values else 1
-            ideal_rps = total_rps / len(self.backends) if self.backends else 1
-            distribution_score = round(max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100), 1)
+            n_b = len(self.backends)
+            ideal_rps = (total_rps / n_b) if n_b else 0.0
+            if ideal_rps <= 1e-12:
+                distribution_score = 100.0
+            else:
+                distribution_score = round(max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100), 1)
 
             return {
                 "total_rps": round(total_rps),
