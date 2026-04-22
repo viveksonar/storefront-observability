@@ -8,9 +8,10 @@ function fleetMinForScenario(summary, scenario) {
   return summary.min_hours_to_critical_spike_3x
 }
 
-/** When API omits runway (baseline sim), show "stable"; in failure modes null means no projection — "—". */
-function nullHoursLabel(simulatorMode) {
-  return simulatorMode === 'normal' ? 'stable' : '—'
+/** Baseline sim + Normal scenario → "stable"; baseline + 2×/3× uses API hours; failure modes null → "—". */
+function nullHoursLabel(simulatorMode, uiScenario = 'normal') {
+  if (simulatorMode === 'normal' && uiScenario === 'normal') return 'stable'
+  return '—'
 }
 
 function formatHoursLarge(h) {
@@ -22,8 +23,9 @@ function formatHoursLarge(h) {
   return `${rounded}h`
 }
 
-function formatHoursCell(h, simulatorMode) {
-  if (h === null || h === undefined) return nullHoursLabel(simulatorMode)
+/** columnScenario matches table column: normal | spike_2x | spike_3x */
+function formatHoursCell(h, simulatorMode, columnScenario = 'normal') {
+  if (h === null || h === undefined) return nullHoursLabel(simulatorMode, columnScenario)
   if (h === 0) return 'now'
   if (h < 1) return '<1'
   return h >= 100 ? `${Math.round(h)}` : (Number.isInteger(h) ? `${h}` : `${h.toFixed(1)}`)
@@ -107,7 +109,7 @@ export default function ForecastTab() {
 
   function fleetBannerHeroText() {
     if (insufficient) return '—'
-    if (simulatorMode === 'normal' && (bannerHours === null || bannerHours === undefined)) return 'stable'
+    if (simulatorMode === 'normal' && scenario === 'normal' && (bannerHours === null || bannerHours === undefined)) return 'stable'
     return formatHoursLarge(bannerHours)
   }
 
@@ -211,6 +213,20 @@ export default function ForecastTab() {
                 confidence {data.data_confidence} · {data.ticks_available} ticks
               </span>
             )}
+            {simulatorMode === 'normal' && (
+              <span
+                style={{
+                  fontFamily: 'var(--font-ui)',
+                  fontSize: 10,
+                  color: 'var(--text-dim)',
+                  textAlign: 'right',
+                  maxWidth: 240,
+                  lineHeight: 1.35,
+                }}
+              >
+                2× / 3× = stress what-ifs (simulation stays normal)
+              </span>
+            )}
           </div>
         </div>
 
@@ -241,7 +257,7 @@ export default function ForecastTab() {
           >
             {[...data.forecasts].sort((a, b) => a.backend_id.localeCompare(b.backend_id)).map((f) => {
               const hc = hcFor(f)
-              const baselineStable = simulatorMode === 'normal'
+              const baselineStable = simulatorMode === 'normal' && scenario === 'normal'
               const rate = f.growth_rate_per_hour
               const conf = confidenceDotStyle(f.confidence)
               const atRisk = f.already_at_risk
@@ -322,12 +338,12 @@ export default function ForecastTab() {
                       ? hc === 0
                         ? 'now'
                         : hc === null || hc === undefined
-                          ? nullHoursLabel(simulatorMode)
+                          ? nullHoursLabel(simulatorMode, scenario)
                           : formatHoursLarge(hc)
                       : hc === null || hc === undefined
                         ? (
                             <span style={{ fontSize: 28, color: baselineStable ? 'var(--green)' : 'var(--text-muted)' }}>
-                              {nullHoursLabel(simulatorMode)}
+                              {nullHoursLabel(simulatorMode, scenario)}
                             </span>
                           )
                         : (
@@ -337,7 +353,15 @@ export default function ForecastTab() {
 
                   <div style={{ marginTop: 'auto', paddingTop: 8, borderTop: '0.5px solid var(--border)' }}>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: growthRateColor(rate, f.is_growing) }}>
-                      {f.is_growing ? `${rate >= 0 ? '+' : ''}${rate.toFixed(1)} conn/hr` : <span style={{ color: 'var(--green)' }}>stable</span>}
+                      {simulatorMode === 'normal' && (scenario === 'spike_2x' || scenario === 'spike_3x') ? (
+                        <span style={{ color: 'var(--amber)' }}>
+                          what-if {scenario === 'spike_2x' ? '2×' : '3×'} promotional drift model
+                        </span>
+                      ) : f.is_growing ? (
+                        `${rate >= 0 ? '+' : ''}${rate.toFixed(1)} conn/hr`
+                      ) : (
+                        <span style={{ color: 'var(--green)' }}>stable</span>
+                      )}
                     </div>
                     <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>
                       {f.current_connections}/500 · {f.connection_utilisation_pct.toFixed(0)}% util
@@ -387,13 +411,13 @@ export default function ForecastTab() {
                       {f.connection_utilisation_pct.toFixed(1)}%
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.normal) }}>
-                      {formatHoursCell(f.hours_to_critical.normal, simulatorMode)}
+                      {formatHoursCell(f.hours_to_critical.normal, simulatorMode, 'normal')}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.spike_2x) }}>
-                      {formatHoursCell(f.hours_to_critical.spike_2x, simulatorMode)}
+                      {formatHoursCell(f.hours_to_critical.spike_2x, simulatorMode, 'spike_2x')}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.spike_3x) }}>
-                      {formatHoursCell(f.hours_to_critical.spike_3x, simulatorMode)}
+                      {formatHoursCell(f.hours_to_critical.spike_3x, simulatorMode, 'spike_3x')}
                     </td>
                   </tr>
                 ))}
@@ -403,13 +427,13 @@ export default function ForecastTab() {
                   </td>
                   <td style={{ padding: '10px 14px' }} />
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_normal) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_normal, simulatorMode)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_normal, simulatorMode, 'normal')}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_spike_2x) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_2x, simulatorMode)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_2x, simulatorMode, 'spike_2x')}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_spike_3x) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_3x, simulatorMode)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_3x, simulatorMode, 'spike_3x')}
                   </td>
                 </tr>
               </tbody>
