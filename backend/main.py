@@ -101,6 +101,23 @@ def get_client_metrics():
     return sim.get_client_metrics()
 
 
+@app.get("/metrics/slo")
+def get_slo_metrics():
+    """
+    Storefront SLO burn rate — distribution score budget (99.5% / score>80).
+    Translates engineering signals into executive-facing reliability language.
+    """
+    return sim.get_slo_metrics()
+
+
+@app.post("/metrics/slo/reset")
+def reset_slo_budget_endpoint():
+    """
+    Reset consumed error budget (demo only). Incident resolve does NOT reset budget.
+    """
+    return sim.reset_slo_budget()
+
+
 @app.post("/simulate/{failure_mode}")
 def trigger_failure(failure_mode: str):
     """
@@ -176,4 +193,14 @@ def incident_report(incident_id: int):
 if __name__ == "__main__":
     port = _resolve_listen_port()
     print(f"INFO:     Listening on http://0.0.0.0:{port}")
+    if port != 8000:
+        print(
+            "WARNING:  Port 8000 was busy — API is on :%s. "
+            "The Vite dev proxy defaults to http://127.0.0.1:8000. "
+            "Either free :8000 and restart, run Vite with "
+            "VITE_PROXY_TARGET=http://127.0.0.1:%s, "
+            "or use frontend/.env.local → VITE_API_BASE_URL=http://127.0.0.1:%s"
+            % (port, port, port),
+            flush=True,
+        )
     uvicorn.run("main:app", host="0.0.0.0", port=port, reload=True)

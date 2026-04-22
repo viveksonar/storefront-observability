@@ -8,8 +8,13 @@ function fleetMinForScenario(summary, scenario) {
   return summary.min_hours_to_critical_spike_3x
 }
 
+/** When API omits runway (baseline sim), show "stable"; in failure modes null means no projection — "—". */
+function nullHoursLabel(simulatorMode) {
+  return simulatorMode === 'normal' ? 'stable' : '—'
+}
+
 function formatHoursLarge(h) {
-  if (h === null || h === undefined) return 'stable'
+  if (h === null || h === undefined) return '—'
   if (h === 0) return 'now'
   if (h < 1) return '<1h'
   if (h >= 100) return `${Math.round(h)}h`
@@ -17,8 +22,8 @@ function formatHoursLarge(h) {
   return `${rounded}h`
 }
 
-function formatHoursCell(h) {
-  if (h === null || h === undefined) return '—'
+function formatHoursCell(h, simulatorMode) {
+  if (h === null || h === undefined) return nullHoursLabel(simulatorMode)
   if (h === 0) return 'now'
   if (h < 1) return '<1'
   return h >= 100 ? `${Math.round(h)}` : (Number.isInteger(h) ? `${h}` : `${h.toFixed(1)}`)
@@ -29,6 +34,15 @@ function hourRiskColor(h) {
   if (h === 0) return 'var(--red)'
   if (h < 24) return 'var(--red)'
   if (h <= 72) return 'var(--amber)'
+  return 'var(--green)'
+}
+
+/** Runway-style coloring for hero hours — comfortable >80h green, tighter <80h amber, urgent <40h red */
+function runwayHoursColor(h) {
+  if (h === null || h === undefined) return 'var(--text-muted)'
+  if (h === 0) return 'var(--red)'
+  if (h < 40) return 'var(--red)'
+  if (h < 80) return 'var(--amber)'
   return 'var(--green)'
 }
 
@@ -51,27 +65,6 @@ function scenarioKeyToLabel(s) {
   if (s === 'normal') return 'Normal'
   if (s === 'spike_2x') return '2× Spike'
   return '3× Spike'
-}
-
-function miniBar(pct) {
-  const p = Math.min(Math.max(pct, 0), 100)
-  let fill = 'var(--green)'
-  if (p >= 85) fill = 'var(--red)'
-  else if (p >= 65) fill = 'var(--amber)'
-  return (
-    <div style={{ height: 3, background: 'var(--border)', borderRadius: 2, overflow: 'hidden', marginTop: 4 }}>
-      <div
-        style={{
-          height: '100%',
-          width: `${p}%`,
-          background: fill,
-          borderRadius: 2,
-          opacity: 0.95,
-          transition: 'width 0.6s ease, opacity 0.25s ease',
-        }}
-      />
-    </div>
-  )
 }
 
 function sortForecastsMostAtRisk(forecasts) {
@@ -107,9 +100,16 @@ export default function ForecastTab() {
   }, [load])
 
   const insufficient = data?.data_confidence === 'insufficient'
+  const simulatorMode = data?.simulator_mode ?? 'normal'
 
   const bannerHours = data ? fleetMinForScenario(data.fleet_summary, scenario) : null
-  const bannerColor = hourRiskColor(bannerHours)
+  const bannerColor = runwayHoursColor(bannerHours)
+
+  function fleetBannerHeroText() {
+    if (insufficient) return '—'
+    if (simulatorMode === 'normal' && (bannerHours === null || bannerHours === undefined)) return 'stable'
+    return formatHoursLarge(bannerHours)
+  }
 
   const hcFor = (f) => {
     if (!f?.hours_to_critical) return null
@@ -118,26 +118,35 @@ export default function ForecastTab() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20, flex: 1, minHeight: 0 }}>
-      {/* SECTION A — Fleet risk */}
+      {/* SECTION A — Fleet capacity hero (large runway number + Vulcan context) */}
       <div
         style={{
           background: 'var(--surface)',
           border: '0.5px solid var(--border)',
           borderRadius: 6,
-          padding: '18px 20px',
+          padding: '22px 24px',
           transition: 'opacity 0.25s ease',
         }}
       >
-        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 16 }}>
-          <div style={{ flex: '1 1 280px' }}>
-            <div style={{ fontFamily: 'var(--font-ui)', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 8 }}>
-              Fleet risk (leading indicator)
+        <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'flex-start', justifyContent: 'space-between', gap: 20 }}>
+          <div style={{ flex: '1 1 320px', minWidth: 0 }}>
+            <div style={{ fontFamily: 'var(--font-ui)', fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 10 }}>
+              Capacity forecasting
             </div>
-            <div style={{ display: 'flex', alignItems: 'baseline', gap: 12, flexWrap: 'wrap' }}>
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 42, fontWeight: 600, color: bannerColor, letterSpacing: '-0.03em', lineHeight: 1 }}>
-                {insufficient ? '—' : formatHoursLarge(bannerHours)}
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, flexWrap: 'wrap' }}>
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 64,
+                  fontWeight: 700,
+                  color: insufficient ? 'var(--text-muted)' : bannerColor,
+                  letterSpacing: '-0.04em',
+                  lineHeight: 0.95,
+                }}
+              >
+                {fleetBannerHeroText()}
               </span>
-              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 13, color: 'var(--text-muted)', maxWidth: 380 }}>
+              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 15, fontWeight: 500, color: 'var(--text-muted)', maxWidth: 420, lineHeight: 1.35 }}>
                 until first backend hits critical threshold{' '}
                 {scenario === 'normal'
                   ? '(normal traffic)'
@@ -146,7 +155,18 @@ export default function ForecastTab() {
                     : '(major event — 3× spike)'}
               </span>
             </div>
-            <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: 'var(--text-muted)', marginTop: 10, fontStyle: 'italic', maxWidth: 720, opacity: 0.95, transition: 'opacity 0.25s ease' }}>
+            <div
+              style={{
+                fontFamily: 'var(--font-ui)',
+                fontSize: 11,
+                color: 'var(--blue)',
+                marginTop: 14,
+                maxWidth: 900,
+                lineHeight: 1.5,
+                opacity: 0.85,
+              }}
+            >
+              <span style={{ color: 'var(--text-muted)', marginRight: 6 }}>|</span>
               {data?.vulcan_note}
             </div>
           </div>
@@ -187,8 +207,8 @@ export default function ForecastTab() {
               })}
             </div>
             {data && (
-              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>
-                data: {data.data_confidence} · ticks {data.ticks_available}
+              <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)' }}>
+                confidence {data.data_confidence} · {data.ticks_available} ticks
               </span>
             )}
           </div>
@@ -216,15 +236,16 @@ export default function ForecastTab() {
             style={{
               display: 'grid',
               gridTemplateColumns: 'repeat(4, 1fr)',
-              gap: 10,
+              gap: 12,
             }}
           >
-            {data.forecasts.map((f) => {
+            {[...data.forecasts].sort((a, b) => a.backend_id.localeCompare(b.backend_id)).map((f) => {
               const hc = hcFor(f)
+              const baselineStable = simulatorMode === 'normal'
               const rate = f.growth_rate_per_hour
               const conf = confidenceDotStyle(f.confidence)
               const atRisk = f.already_at_risk
-              const hoursColor = hourRiskColor(hc)
+              const hoursColor = runwayHoursColor(hc)
 
               return (
                 <div
@@ -234,14 +255,17 @@ export default function ForecastTab() {
                     background: 'var(--surface)',
                     border: '0.5px solid var(--border)',
                     borderRadius: 6,
-                    padding: '12px 14px',
+                    padding: '14px 16px',
                     position: 'relative',
                     transition: 'opacity 0.25s ease',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    minHeight: 168,
                   }}
                 >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500, color: 'var(--text)' }}>{f.backend_id}</span>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 13, fontWeight: 600, color: 'var(--text-muted)' }}>{f.backend_id}</span>
                       {f.is_cross_dc && (
                         <span
                           style={{
@@ -260,7 +284,7 @@ export default function ForecastTab() {
                         </span>
                       )}
                     </div>
-                    <div title={`confidence: ${conf.label}`} style={{ width: 8, height: 8, borderRadius: '50%', background: conf.bg, opacity: 0.95 }} />
+                    <div title={`confidence: ${conf.label}`} style={{ width: 7, height: 7, borderRadius: '50%', background: conf.bg, opacity: 0.9 }} />
                   </div>
 
                   {atRisk ? (
@@ -271,48 +295,54 @@ export default function ForecastTab() {
                         fontWeight: 600,
                         letterSpacing: '0.06em',
                         color: f.already_at_risk_level === 'critical' ? 'var(--red)' : 'var(--amber)',
-                        marginBottom: 8,
+                        marginBottom: 6,
                       }}
                     >
                       ALREADY AT RISK
                     </div>
                   ) : null}
 
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                        Connections
-                      </span>
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text)' }}>
-                        {f.current_connections} <span style={{ color: 'var(--text-muted)' }}>/ 500</span>
-                      </span>
-                    </div>
-                    {miniBar(f.connection_utilisation_pct)}
+                  <div style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                    Hours to critical
                   </div>
 
-                  <div style={{ marginBottom: 8 }}>
-                    <div style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
-                      Growth
-                    </div>
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 500, color: growthRateColor(rate, f.is_growing) }}>
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 38,
+                      fontWeight: 700,
+                      letterSpacing: '-0.04em',
+                      lineHeight: 1,
+                      marginBottom: 'auto',
+                      paddingBottom: 12,
+                      color: atRisk ? 'var(--red)' : hoursColor,
+                    }}
+                  >
+                    {atRisk
+                      ? hc === 0
+                        ? 'now'
+                        : hc === null || hc === undefined
+                          ? nullHoursLabel(simulatorMode)
+                          : formatHoursLarge(hc)
+                      : hc === null || hc === undefined
+                        ? (
+                            <span style={{ fontSize: 28, color: baselineStable ? 'var(--green)' : 'var(--text-muted)' }}>
+                              {nullHoursLabel(simulatorMode)}
+                            </span>
+                          )
+                        : (
+                            formatHoursLarge(hc)
+                          )}
+                  </div>
+
+                  <div style={{ marginTop: 'auto', paddingTop: 8, borderTop: '0.5px solid var(--border)' }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: growthRateColor(rate, f.is_growing) }}>
                       {f.is_growing ? `${rate >= 0 ? '+' : ''}${rate.toFixed(1)} conn/hr` : <span style={{ color: 'var(--green)' }}>stable</span>}
                     </div>
-                  </div>
-
-                  {!atRisk && (
-                    <div>
-                      <div style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: 2 }}>
-                        Hours to critical ({scenarioKeyToLabel(scenario)})
-                      </div>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 22, fontWeight: 600, color: hoursColor, letterSpacing: '-0.02em' }}>
-                        {f.is_growing ? (
-                          formatHoursLarge(hc)
-                        ) : (
-                          <span style={{ color: 'var(--green)', fontSize: 18 }}>stable</span>
-                        )}
-                      </div>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-dim)', marginTop: 4 }}>
+                      {f.current_connections}/500 · {f.connection_utilisation_pct.toFixed(0)}% util
                     </div>
-                  )}
+                  </div>
                 </div>
               )
             })}
@@ -357,13 +387,13 @@ export default function ForecastTab() {
                       {f.connection_utilisation_pct.toFixed(1)}%
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.normal) }}>
-                      {formatHoursCell(f.hours_to_critical.normal)}
+                      {formatHoursCell(f.hours_to_critical.normal, simulatorMode)}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.spike_2x) }}>
-                      {formatHoursCell(f.hours_to_critical.spike_2x)}
+                      {formatHoursCell(f.hours_to_critical.spike_2x, simulatorMode)}
                     </td>
                     <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: hourRiskColor(f.hours_to_critical.spike_3x) }}>
-                      {formatHoursCell(f.hours_to_critical.spike_3x)}
+                      {formatHoursCell(f.hours_to_critical.spike_3x, simulatorMode)}
                     </td>
                   </tr>
                 ))}
@@ -373,13 +403,13 @@ export default function ForecastTab() {
                   </td>
                   <td style={{ padding: '10px 14px' }} />
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_normal) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_normal)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_normal, simulatorMode)}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_spike_2x) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_2x)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_2x, simulatorMode)}
                   </td>
                   <td style={{ padding: '10px 14px', textAlign: 'right', fontFamily: 'var(--font-mono)', fontWeight: 600, color: hourRiskColor(data.fleet_summary.min_hours_to_critical_spike_3x) }}>
-                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_3x)}
+                    {formatHoursCell(data.fleet_summary.min_hours_to_critical_spike_3x, simulatorMode)}
                   </td>
                 </tr>
               </tbody>

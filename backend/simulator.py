@@ -20,6 +20,7 @@ import random
 import threading
 import time
 from collections import deque
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -34,6 +35,11 @@ TOTAL_RPS = 12000          # Agoda's data platform generates significant S3 traf
 # Forecast thresholds (leading indicator vs lagging saturation — Kafka capacity playbook)
 FORECAST_WARNING_CONN = int(MAX_CONNECTIONS * 0.65)    # 325
 FORECAST_CRITICAL_CONN = int(MAX_CONNECTIONS * 0.85)   # 425
+
+# SLO: 99.5% good traffic → 0.5% error budget ≈ 21.6 minutes per 30-day month (Google SRE workbook style).
+SLO_DISTRIBUTION_THRESHOLD = 80.0
+SLO_MONTHLY_BUDGET_SECONDS = 21.6 * 60.0  # 1296
+SLO_MONTH_SECONDS = 30 * 24 * 3600
 
 VULCAN_NOTE = (
     "This is the manual version of what Vulcan automates. Vulcan integrates Gatekeeper "
@@ -128,6 +134,14 @@ def _hours_pair_for_scenario(
     )
 
 
+def _slo_failure_title(failure_type: str) -> str:
+    return {
+        "dns_stickiness": "DNS Stickiness",
+        "connection_exhaustion": "Connection Exhaustion",
+        "cross_dc_throttling": "Cross-DC Throttling",
+    }.get(failure_type, failure_type.replace("_", " ").title())
+
+
 def _fleet_recommendation(
     mins: Dict[str, Optional[float]],
     most_backend: Optional[str],
@@ -189,6 +203,10 @@ class MetricSimulator:
         self.backends = self._init_backends()
         self._last_tick_time = time.time()
         self._active_incident_id: Optional[int] = None
+        # SLO error budget (seconds of violation against distribution score — persists across incident resolve).
+        self.slo_budget_used_seconds: float = 0.0
+        self.slo_monthly_budget_seconds: float = float(SLO_MONTHLY_BUDGET_SECONDS)
+        self.slo_last_score: float = 100.0
         # Parallel HTTP polls call getters concurrently; SQLite + mutable backends must not race.
         self._lock = threading.Lock()
 
@@ -370,6 +388,10 @@ class MetricSimulator:
             distribution_score = 100.0
         else:
             distribution_score = max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100)
+
+        self.slo_last_score = round(float(distribution_score), 1)
+        if distribution_score < SLO_DISTRIBUTION_THRESHOLD:
+            self.slo_budget_used_seconds += 1.0
 
         self.history.append({
             "tick": self.tick,
@@ -553,6 +575,7 @@ class MetricSimulator:
         MIN_TICKS = 5
         with self._lock:
             self._tick()
+            simulator_mode = self.mode
             history_snapshot = list(self.history)
             backends_snap = [
                 {
@@ -587,6 +610,7 @@ class MetricSimulator:
                 },
                 "data_confidence": "insufficient",
                 "ticks_available": n_ticks,
+                "simulator_mode": simulator_mode,
                 "message": (
                     "Insufficient history: linear regression requires at least 5 ticks of "
                     "per-backend connection samples (~5 seconds of simulator uptime)."
@@ -619,12 +643,11 @@ class MetricSimulator:
                 and rate_hour >= 2.0
             )
 
+            # Always expose runway hours from the regression slope when rate > 0.
+            # `is_growing` stays a separate signal (strong trend / noise filtered); do not strip hours when it is false.
             hw_norm, hc_norm = _hours_pair_for_scenario(float(current), rate_hour, 1.0)
             hw_2, hc_2 = _hours_pair_for_scenario(float(current), rate_hour, 2.0)
             hw_3, hc_3 = _hours_pair_for_scenario(float(current), rate_hour, 3.0)
-
-            if not is_growing:
-                hw_norm = hw_2 = hw_3 = hc_norm = hc_2 = hc_3 = None
 
             at_warning = current >= FORECAST_WARNING_CONN
             at_critical = current >= FORECAST_CRITICAL_CONN
@@ -684,6 +707,22 @@ class MetricSimulator:
             most_b,
         )
 
+        # Baseline operation: no simulated failure — suppress regression runway so the UI stays
+        # "stable" (scenario buttons are what-ifs only; they do not change simulator mode).
+        # When a failure mode is active, expose full projections for Normal / 2× / 3× stress views.
+        if simulator_mode == "normal":
+            for f in forecasts:
+                f["hours_to_warning"] = {"normal": None, "spike_2x": None, "spike_3x": None}
+                f["hours_to_critical"] = {"normal": None, "spike_2x": None, "spike_3x": None}
+                f["is_growing"] = False
+                f["growth_rate_per_hour"] = 0.0
+            min_norm = min_2 = min_3 = None
+            most_b = None
+            recommendation = _fleet_recommendation(
+                {"normal": None, "spike_2x": None, "spike_3x": None},
+                None,
+            )
+
         return {
             "forecasts": forecasts,
             "fleet_summary": {
@@ -695,8 +734,176 @@ class MetricSimulator:
             },
             "data_confidence": conf_label,
             "ticks_available": ticks_reported,
+            "simulator_mode": simulator_mode,
             "vulcan_note": VULCAN_NOTE,
         }
+
+    def reset_slo_budget(self) -> Dict[str, Any]:
+        """Explicit monthly budget reset (does not run on POST /simulate/normal)."""
+        with self._lock:
+            self.slo_budget_used_seconds = 0.0
+            rem_m = round(self.slo_monthly_budget_seconds / 60.0, 1)
+            return {
+                "ok": True,
+                "message": "SLO error budget reset — consumed seconds cleared",
+                "slo_budget_used_seconds": 0.0,
+                "budget_minutes_remaining": rem_m,
+            }
+
+    def _slo_build_window_data(self) -> tuple[List[Dict[str, Any]], float]:
+        """Rolling 30-day cells with SQLite-backed incident markers + active outage on 'today'."""
+        rows = incident_store.get_incidents(40)
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        window: List[Dict[str, Any]] = []
+        total_minutes = 0.0
+
+        by_date: Dict[str, Dict[str, Any]] = {}
+        for inc in rows:
+            try:
+                st = float(inc.get("start_time") or 0)
+                if st <= 0:
+                    continue
+                d = datetime.fromtimestamp(st).replace(hour=0, minute=0, second=0, microsecond=0)
+                key = d.strftime("%Y-%m-%d")
+                by_date[key] = {"failure_type": inc.get("failure_type"), "id": inc.get("id")}
+            except (TypeError, ValueError, OSError):
+                continue
+
+        for i in range(30):
+            day_offset = 29 - i
+            dt = today - timedelta(days=day_offset)
+            key = dt.strftime("%Y-%m-%d")
+            date_label = f"{dt.strftime('%b')} {dt.day}"
+            day_num = i + 1
+
+            incident_info = by_date.get(key)
+            active_today = self.mode != "normal" and day_offset == 0
+
+            rng = random.Random(hash((key, "slo-window")))
+            if active_today:
+                minutes = round(rng.uniform(0.9, 4.2), 2)
+                had_incident = True
+                inc_type = _slo_failure_title(self.mode)
+            elif incident_info:
+                minutes = round(rng.uniform(0.85, 4.5), 2)
+                had_incident = True
+                ft = str(incident_info.get("failure_type") or "")
+                inc_type = _slo_failure_title(ft)
+            else:
+                minutes = round(rng.uniform(0.05, 0.2), 2)
+                had_incident = False
+                inc_type = None
+
+            total_minutes += minutes
+            window.append({
+                "day": day_num,
+                "date_label": date_label,
+                "minutes_consumed": minutes,
+                "had_incident": had_incident,
+                "incident_type": inc_type,
+            })
+
+        return window, round(total_minutes, 1)
+
+    def _slo_incident_budget_impact(self) -> List[Dict[str, Any]]:
+        rows = incident_store.get_incidents(12)
+        month_minutes = self.slo_monthly_budget_seconds / 60.0
+        out: List[Dict[str, Any]] = []
+        for inc in rows[:5]:
+            dur = inc.get("duration_seconds")
+            bid = int(inc.get("id") or 0)
+            if dur is None or float(dur) <= 0:
+                minutes_burned = round(min(4.5, max(0.6, 1.1 + (bid % 17) / 7.0)), 1)
+            else:
+                minutes_burned = round(min(float(dur) / 60.0, month_minutes * 0.95), 1)
+            pct = round(min(100.0, (minutes_burned / month_minutes) * 100.0), 1)
+            if pct >= 15:
+                severity = "high"
+            elif pct >= 7:
+                severity = "medium"
+            else:
+                severity = "low"
+            st = float(inc.get("start_time") or 0)
+            try:
+                dt = datetime.fromtimestamp(st)
+                date_str = f"{dt.strftime('%b')} {dt.day}"
+            except (OSError, ValueError, OverflowError):
+                date_str = "—"
+            out.append({
+                "incident_id": f"INC-{bid:03d}",
+                "date": date_str,
+                "type": _slo_failure_title(str(inc.get("failure_type") or "")),
+                "minutes_burned": minutes_burned,
+                "pct_of_budget": pct,
+                "severity": severity,
+            })
+        out.sort(key=lambda x: x["pct_of_budget"], reverse=True)
+        return out
+
+    def get_slo_metrics(self) -> Dict[str, Any]:
+        with self._lock:
+            self._tick()
+            hist_list = list(self.history)
+            recent_violations = sum(
+                1 for row in hist_list
+                if float(row.get("distribution_score", 100)) < SLO_DISTRIBUTION_THRESHOLD
+            )
+            actual_rate_last_hour = recent_violations / 60.0
+
+            budget_per_second = self.slo_monthly_budget_seconds / float(SLO_MONTH_SECONDS)
+            burn_rate_1h = actual_rate_last_hour / budget_per_second if budget_per_second > 1e-18 else 0.0
+            burn_rate_6h = round(burn_rate_1h * 0.7, 2)
+
+            budget_pct_remaining = max(
+                0.0,
+                min(100.0, (1.0 - self.slo_budget_used_seconds / self.slo_monthly_budget_seconds) * 100.0),
+            )
+
+            budget_minutes_used = round(self.slo_budget_used_seconds / 60.0, 1)
+            budget_minutes_total = round(self.slo_monthly_budget_seconds / 60.0, 1)
+            budget_minutes_remaining = round(max(0.0, budget_minutes_total - budget_minutes_used), 1)
+
+            if burn_rate_1h > 1 and actual_rate_last_hour > 1e-12:
+                rem_secs = max(0.0, self.slo_monthly_budget_seconds - self.slo_budget_used_seconds)
+                hours_to_exhaustion = round(rem_secs / actual_rate_last_hour / 3600.0, 1)
+            else:
+                hours_to_exhaustion = None
+
+            if budget_pct_remaining < 20 or burn_rate_1h > 5:
+                status = "critical"
+            elif budget_pct_remaining < 50 or burn_rate_1h >= 2:
+                status = "at_risk"
+            else:
+                status = "healthy"
+
+            window_data, heatmap_total_minutes = self._slo_build_window_data()
+            incident_budget_impact = self._slo_incident_budget_impact()
+
+            return {
+                "slo_target": 99.5,
+                "slo_definition": "99.5% of S3 requests complete with distribution score > 80",
+                "budget_minutes_total": budget_minutes_total,
+                "budget_minutes_used": budget_minutes_used,
+                "budget_minutes_remaining": budget_minutes_remaining,
+                "budget_pct_remaining": round(budget_pct_remaining, 1),
+                "burn_rate_1h": round(burn_rate_1h, 2),
+                "burn_rate_6h": burn_rate_6h,
+                "hours_to_exhaustion": hours_to_exhaustion,
+                "status": status,
+                "status_thresholds": {
+                    "healthy": "budget_pct > 50 AND burn_rate_1h < 2",
+                    "at_risk": "budget_pct 20–50 OR burn_rate_1h 2–5",
+                    "critical": "budget_pct < 20 OR burn_rate_1h > 5",
+                },
+                "window_data": window_data,
+                "heatmap_minutes_total": heatmap_total_minutes,
+                "incident_budget_impact": incident_budget_impact,
+                "sre_note": (
+                    "Burn rate >1× = spending budget faster than you can afford. "
+                    "Burn rate >14.4× = monthly budget exhausted in 2 days. "
+                    "Source: Google SRE Workbook."
+                ),
+            }
 
     def _client_primary_backends_normal(self, client_id: str) -> List[str]:
         i = _stable_slot(client_id)
