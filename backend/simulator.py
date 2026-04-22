@@ -14,13 +14,17 @@ Incident persistence: lifecycle hooks call incident_store so TPM evidence
 survives mode transitions and container restarts (SQLite).
 """
 
+import logging
 import random
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional
 
 import incident_store
+
+logger = logging.getLogger(__name__)
 
 BACKEND_COUNT = 8          # VAST provides a pool of virtual IPs
 MAX_CONNECTIONS = 500      # Per-backend connection limit (realistic for VAST compute node)
@@ -50,6 +54,8 @@ class MetricSimulator:
         self.backends = self._init_backends()
         self._last_tick_time = time.time()
         self._active_incident_id: Optional[int] = None
+        # Parallel HTTP polls call getters concurrently; SQLite + mutable backends must not race.
+        self._lock = threading.Lock()
 
     def _init_backends(self) -> List[Backend]:
         """
@@ -94,14 +100,17 @@ class MetricSimulator:
         """Every simulated tick during an outage updates SQLite peak columns."""
         if self.mode == "normal" or self._active_incident_id is None:
             return
-        incident_store.record_incident_tick(self._active_incident_id, self)
-        # Lightweight timeline narration — avoids per-tick spam but documents sustained stress.
-        if self.tick > 0 and self.tick % 30 == 0:
-            incident_store.add_event(
-                self._active_incident_id,
-                "metric_snapshot",
-                f"Sustained degradation — simulation tick {self.tick}, peaks still accumulating",
-            )
+        try:
+            incident_store.record_incident_tick(self._active_incident_id, self)
+            if self.tick > 0 and self.tick % 30 == 0:
+                incident_store.add_event(
+                    self._active_incident_id,
+                    "metric_snapshot",
+                    f"Sustained degradation — simulation tick {self.tick}, peaks still accumulating",
+                )
+        except Exception as e:
+            # Read-only /app or SQLite busy — metrics API must still return 200.
+            logger.warning("incident_store tick failed (non-fatal): %s", e)
 
     def _simulate_normal(self):
         """
@@ -214,7 +223,7 @@ class MetricSimulator:
 
         # Load distribution score: 100 = perfectly even, 0 = all on one backend
         rps_values = [b.rps for b in self.backends]
-        max_rps = max(rps_values) if rps_values > 0 else 1
+        max_rps = max(rps_values) if rps_values else 1
         ideal_rps = total_rps / len(self.backends)
         distribution_score = max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100)
 
@@ -233,141 +242,157 @@ class MetricSimulator:
         """
         Failure transitions open/close SQLite incidents so TPM timelines remain auditable.
         """
-        old = self.mode
+        with self._lock:
+            old = self.mode
 
-        if mode == "normal":
+            if mode == "normal":
+                self.mode = mode
+                self.tick = 0
+                if self._active_incident_id is not None:
+                    try:
+                        incident_store.resolve_incident(self._active_incident_id, self)
+                    except Exception as e:
+                        logger.warning("resolve_incident failed: %s", e)
+                    self._active_incident_id = None
+                return
+
+            if old == "normal":
+                self.mode = mode
+                self.tick = 0
+                try:
+                    self._active_incident_id = incident_store.create_incident(mode)
+                except Exception as e:
+                    logger.warning("create_incident failed: %s", e)
+                    self._active_incident_id = None
+                return
+
+            if old != mode:
+                if self._active_incident_id is not None:
+                    try:
+                        incident_store.resolve_incident(self._active_incident_id, self)
+                    except Exception as e:
+                        logger.warning("resolve_incident failed: %s", e)
+                    self._active_incident_id = None
+                self.mode = mode
+                self.tick = 0
+                try:
+                    self._active_incident_id = incident_store.create_incident(mode)
+                except Exception as e:
+                    logger.warning("create_incident failed: %s", e)
+                    self._active_incident_id = None
+                return
+
             self.mode = mode
             self.tick = 0
-            if self._active_incident_id is not None:
-                incident_store.resolve_incident(self._active_incident_id, self)
-                self._active_incident_id = None
-            return
-
-        if old == "normal":
-            self.mode = mode
-            self.tick = 0
-            self._active_incident_id = incident_store.create_incident(mode)
-            return
-
-        if old != mode:
-            if self._active_incident_id is not None:
-                incident_store.resolve_incident(self._active_incident_id, self)
-                self._active_incident_id = None
-            self.mode = mode
-            self.tick = 0
-            self._active_incident_id = incident_store.create_incident(mode)
-            return
-
-        self.mode = mode
-        self.tick = 0
 
     def get_backend_metrics(self) -> dict:
-        self._tick()
-        return {
-            "backends": [
-                {
-                    "id": b.id,
-                    "ip": b.ip,
-                    "connections": b.connections,
-                    "connection_utilisation_pct": round(b.connections / MAX_CONNECTIONS * 100, 1),
-                    "rps": round(b.rps, 1),
-                    "latency_p99_ms": round(b.latency_p99_ms, 1),
-                    "io_timeouts_per_min": round(b.io_timeouts_per_min, 2),
-                    "is_cross_dc": b.is_cross_dc,
-                    "healthy": b.healthy,
-                    "status": "critical" if b.connections > MAX_CONNECTIONS * 0.85
-                              else "warning" if b.connections > MAX_CONNECTIONS * 0.65
-                              else "healthy",
-                }
-                for b in self.backends
-            ],
-            "mode": self.mode,
-            "max_connections_per_backend": MAX_CONNECTIONS,
-        }
+        with self._lock:
+            self._tick()
+            return {
+                "backends": [
+                    {
+                        "id": b.id,
+                        "ip": b.ip,
+                        "connections": b.connections,
+                        "connection_utilisation_pct": round(b.connections / MAX_CONNECTIONS * 100, 1),
+                        "rps": round(b.rps, 1),
+                        "latency_p99_ms": round(b.latency_p99_ms, 1),
+                        "io_timeouts_per_min": round(b.io_timeouts_per_min, 2),
+                        "is_cross_dc": b.is_cross_dc,
+                        "healthy": b.healthy,
+                        "status": "critical" if b.connections > MAX_CONNECTIONS * 0.85
+                                  else "warning" if b.connections > MAX_CONNECTIONS * 0.65
+                                  else "healthy",
+                    }
+                    for b in self.backends
+                ],
+                "mode": self.mode,
+                "max_connections_per_backend": MAX_CONNECTIONS,
+            }
 
     def get_anomalies(self) -> dict:
-        self._tick()
-        alerts = []
+        with self._lock:
+            self._tick()
+            alerts = []
 
-        # Check for connection exhaustion
-        for b in self.backends:
-            if b.connections > MAX_CONNECTIONS * 0.85:
-                alerts.append({
-                    "type": "connection_exhaustion",
-                    "severity": "critical",
-                    "backend": b.id,
-                    "message": f"{b.id} at {b.connections}/{MAX_CONNECTIONS} connections — "
-                               f"risk of VAST compute node availability failure",
-                    "article_ref": "Storefront article Feb 2026: bad S3 client IO stream exhaustion",
-                })
-
-        # Check for DNS stickiness (one backend handling >50% of traffic)
-        total_rps = sum(b.rps for b in self.backends)
-        if total_rps > 0:
+            # Check for connection exhaustion
             for b in self.backends:
-                if b.rps / total_rps > 0.50:
+                if b.connections > MAX_CONNECTIONS * 0.85:
                     alerts.append({
-                        "type": "dns_stickiness",
+                        "type": "connection_exhaustion",
                         "severity": "critical",
                         "backend": b.id,
-                        "message": f"{b.id} handling {b.rps/total_rps*100:.0f}% of requests — "
-                                   f"DNS cache stickiness suspected",
-                        "article_ref": "Storefront article Feb 2026: DNS TTL=1s causing sticky routing",
+                        "message": f"{b.id} at {b.connections}/{MAX_CONNECTIONS} connections — "
+                                   f"risk of VAST compute node availability failure",
+                        "article_ref": "Storefront article Feb 2026: bad S3 client IO stream exhaustion",
                     })
 
-        # Check for cross-DC throttling (cross-DC latency > 200ms)
-        for b in self.backends:
-            if b.is_cross_dc and b.latency_p99_ms > 200:
+            total_rps = sum(b.rps for b in self.backends)
+            if total_rps > 0:
+                for b in self.backends:
+                    if b.rps / total_rps > 0.50:
+                        alerts.append({
+                            "type": "dns_stickiness",
+                            "severity": "critical",
+                            "backend": b.id,
+                            "message": f"{b.id} handling {b.rps/total_rps*100:.0f}% of requests — "
+                                       f"DNS cache stickiness suspected",
+                            "article_ref": "Storefront article Feb 2026: DNS TTL=1s causing sticky routing",
+                        })
+
+            for b in self.backends:
+                if b.is_cross_dc and b.latency_p99_ms > 200:
+                    alerts.append({
+                        "type": "cross_dc_throttling",
+                        "severity": "warning",
+                        "backend": b.id,
+                        "message": f"{b.id} (cross-DC) P99={b.latency_p99_ms:.0f}ms — "
+                                   f"backup replication may be saturating this VAST pool",
+                        "article_ref": "Storefront article Feb 2026: cross-DC bandwidth throttling",
+                    })
+
+            non_cross_dc_elevated = [
+                b for b in self.backends
+                if not b.is_cross_dc and b.latency_p99_ms > 15
+            ]
+            if len(non_cross_dc_elevated) >= 3:
                 alerts.append({
-                    "type": "cross_dc_throttling",
+                    "type": "cross_dc_collateral",
                     "severity": "warning",
-                    "backend": b.id,
-                    "message": f"{b.id} (cross-DC) P99={b.latency_p99_ms:.0f}ms — "
-                               f"backup replication may be saturating this VAST pool",
-                    "article_ref": "Storefront article Feb 2026: cross-DC bandwidth throttling",
+                    "backend": "cluster-wide",
+                    "message": f"{len(non_cross_dc_elevated)} same-DC backends showing elevated latency "
+                               f"— cross-DC traffic may be affecting shared VAST cluster resources",
+                    "article_ref": "Storefront article Feb 2026: cross-DC traffic affecting all users in same VAST cluster",
                 })
 
-        # Check for collateral cross-DC damage (same-DC latency >15ms)
-        non_cross_dc_elevated = [
-            b for b in self.backends
-            if not b.is_cross_dc and b.latency_p99_ms > 15
-        ]
-        if len(non_cross_dc_elevated) >= 3:
-            alerts.append({
-                "type": "cross_dc_collateral",
-                "severity": "warning",
-                "backend": "cluster-wide",
-                "message": f"{len(non_cross_dc_elevated)} same-DC backends showing elevated latency "
-                           f"— cross-DC traffic may be affecting shared VAST cluster resources",
-                "article_ref": "Storefront article Feb 2026: cross-DC traffic affecting all users in same VAST cluster",
-            })
-
-        return {"alerts": alerts, "count": len(alerts)}
+            return {"alerts": alerts, "count": len(alerts)}
 
     def get_summary(self) -> dict:
-        self._tick()
-        total_rps = sum(b.rps for b in self.backends)
-        total_connections = sum(b.connections for b in self.backends)
-        cross_dc_rps = sum(b.rps for b in self.backends if b.is_cross_dc)
-        cross_dc_pct = round(cross_dc_rps / total_rps * 100, 1) if total_rps > 0 else 0
-        total_io_timeouts = sum(b.io_timeouts_per_min for b in self.backends)
-        unhealthy = sum(1 for b in self.backends if not b.healthy)
+        with self._lock:
+            self._tick()
+            total_rps = sum(b.rps for b in self.backends)
+            total_connections = sum(b.connections for b in self.backends)
+            cross_dc_rps = sum(b.rps for b in self.backends if b.is_cross_dc)
+            cross_dc_pct = round(cross_dc_rps / total_rps * 100, 1) if total_rps > 0 else 0
+            total_io_timeouts = sum(b.io_timeouts_per_min for b in self.backends)
+            unhealthy = sum(1 for b in self.backends if not b.healthy)
 
-        rps_values = [b.rps for b in self.backends]
-        max_rps = max(rps_values) if rps_values else 1
-        ideal_rps = total_rps / len(self.backends) if self.backends else 1
-        distribution_score = round(max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100), 1)
+            rps_values = [b.rps for b in self.backends]
+            max_rps = max(rps_values) if rps_values else 1
+            ideal_rps = total_rps / len(self.backends) if self.backends else 1
+            distribution_score = round(max(0, 100 - (max_rps - ideal_rps) / ideal_rps * 100), 1)
 
-        return {
-            "total_rps": round(total_rps),
-            "total_connections": total_connections,
-            "cross_dc_traffic_pct": cross_dc_pct,
-            "io_timeouts_per_min": round(total_io_timeouts, 2),
-            "unhealthy_backends": unhealthy,
-            "load_distribution_score": distribution_score,
-            "mode": self.mode,
-        }
+            return {
+                "total_rps": round(total_rps),
+                "total_connections": total_connections,
+                "cross_dc_traffic_pct": cross_dc_pct,
+                "io_timeouts_per_min": round(total_io_timeouts, 2),
+                "unhealthy_backends": unhealthy,
+                "load_distribution_score": distribution_score,
+                "mode": self.mode,
+            }
 
     def get_history(self) -> dict:
-        self._tick()
-        return {"history": list(self.history)}
+        with self._lock:
+            self._tick()
+            return {"history": list(self.history)}
