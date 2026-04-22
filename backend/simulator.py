@@ -14,6 +14,7 @@ Incident persistence: lifecycle hooks call incident_store so TPM evidence
 survives mode transitions and container restarts (SQLite).
 """
 
+import hashlib
 import logging
 import random
 import threading
@@ -38,6 +39,23 @@ VULCAN_NOTE = (
     "This is the manual version of what Vulcan automates. Vulcan integrates Gatekeeper "
     "and historical capacity data to make these decisions automatically across 1,500 services."
 )
+
+# Simulated internal Agoda services — FINUDP-style single source of truth for attribution (Jan 2026 article).
+CLIENT_REGISTRY: List[Dict[str, Any]] = [
+    {"client_id": "booking-api", "team_owner": "Checkout", "traffic_pattern": "High, steady", "base_weight": 0.25, "is_cross_dc_heavy": False},
+    {"client_id": "search-results-svc", "team_owner": "Search", "traffic_pattern": "Spiky", "base_weight": 0.20, "is_cross_dc_heavy": False},
+    {"client_id": "hotel-content-cache", "team_owner": "Supply", "traffic_pattern": "Moderate, regular", "base_weight": 0.18, "is_cross_dc_heavy": False},
+    {"client_id": "finudp-spark-job", "team_owner": "Data Platform", "traffic_pattern": "Batch, heavy", "base_weight": 0.12, "is_cross_dc_heavy": False},
+    {"client_id": "kafka-mirror-svc", "team_owner": "Data Infra", "traffic_pattern": "Cross-DC, steady", "base_weight": 0.10, "is_cross_dc_heavy": True},
+    {"client_id": "ml-feature-store", "team_owner": "ML Platform", "traffic_pattern": "Moderate", "base_weight": 0.08, "is_cross_dc_heavy": False},
+    {"client_id": "promo-engine", "team_owner": "Marketing", "traffic_pattern": "Low→extreme spike", "base_weight": 0.03, "is_cross_dc_heavy": False},
+    {"client_id": "legacy-etl-job", "team_owner": "Data Platform", "traffic_pattern": "Erratic", "base_weight": 0.04, "is_cross_dc_heavy": False},
+]
+
+
+def _stable_slot(client_id: str) -> int:
+    h = hashlib.md5(client_id.encode()).hexdigest()
+    return int(h[:8], 16) % BACKEND_COUNT
 
 
 def _linear_slope_and_r2(ys: List[float]) -> tuple[Optional[float], float]:
@@ -285,7 +303,12 @@ class MetricSimulator:
         eventually exhausting the backend's connection limits."
         — Storefront article, Feb 2026
         """
-        ramp = min(1.0, (self.tick % 120) / 80.0)  # Ramps up over ~80 ticks
+        # Previous ramp (tick/80) left vast-03/04 near baseline for ~30s while client attribution
+        # already showed legacy-etl-job + copy naming those nodes — looked broken. Use a faster ramp
+        # with a floor so the grid clearly reflects the two hot shards as soon as this mode is active.
+        t = max(1, self.tick)
+        ramp_linear = min(1.0, t / 22.0)
+        ramp = min(1.0, max(ramp_linear, 0.34))
         for i, b in enumerate(self.backends):
             base_rps = TOTAL_RPS / BACKEND_COUNT
             b.rps = self._noise(base_rps, 0.12)
@@ -370,12 +393,11 @@ class MetricSimulator:
             if mode == "normal":
                 self.mode = mode
                 self.tick = 0
-                if self._active_incident_id is not None:
-                    try:
-                        incident_store.resolve_incident(self._active_incident_id, self)
-                    except Exception as e:
-                        logger.warning("resolve_incident failed: %s", e)
-                    self._active_incident_id = None
+                try:
+                    incident_store.resolve_all_active_incidents(self)
+                except Exception as e:
+                    logger.warning("resolve_all_active_incidents failed: %s", e)
+                self._active_incident_id = None
                 return
 
             if old == "normal":
@@ -675,3 +697,233 @@ class MetricSimulator:
             "ticks_available": ticks_reported,
             "vulcan_note": VULCAN_NOTE,
         }
+
+    def _client_primary_backends_normal(self, client_id: str) -> List[str]:
+        i = _stable_slot(client_id)
+        j = (i + 3) % BACKEND_COUNT
+        return [f"vast-{i + 1:02d}", f"vast-{j + 1:02d}"]
+
+    def get_client_metrics(self) -> Dict[str, Any]:
+        """
+        Per-client attribution: which internal service owns degradation (FINUDP-style single pane).
+        Behaviour is coupled to failure mode simulation (DNS stickiness → booking-api,
+        exhaustion → legacy-etl-job, cross-DC throttle → kafka-mirror-svc).
+        """
+        with self._lock:
+            self._tick()
+            bs = self.backends
+            mode = self.mode
+            total_rps = sum(b.rps for b in bs)
+            tr = total_rps if total_rps > 1e-9 else 1e-9
+            total_conn = sum(b.connections for b in bs)
+            total_io = sum(b.io_timeouts_per_min for b in bs)
+
+            rows: List[Dict[str, Any]] = []
+            flagged: Optional[Dict[str, str]] = None
+
+            def append_row(
+                reg: Dict[str, Any],
+                *,
+                rps: float,
+                conn: int,
+                io_r: float,
+                health: str,
+                anomaly: Optional[Dict[str, Any]],
+                prim: List[str],
+            ) -> None:
+                pct = round(100 * rps / tr, 1)
+                rows.append({
+                    "client_id": reg["client_id"],
+                    "team_owner": reg["team_owner"],
+                    "traffic_pattern": reg["traffic_pattern"],
+                    "rps": round(rps, 1),
+                    "rps_pct": pct,
+                    "connections": max(0, conn),
+                    "primary_backends": prim,
+                    "io_timeout_rate": round(max(0.0, io_r), 2),
+                    "connection_health": health,
+                    "anomaly": anomaly,
+                    "is_cross_dc_heavy": reg["is_cross_dc_heavy"],
+                })
+
+            if mode == "normal":
+                for reg in CLIENT_REGISTRY:
+                    w = reg["base_weight"]
+                    rps_v = total_rps * w * self._noise(1.0, 0.06)
+                    conn_v = max(1, int(total_conn * w * self._noise(1.0, 0.1)))
+                    io_v = max(0.0, total_io * w * 0.08 * self._noise(1.0, 0.35))
+                    append_row(
+                        reg,
+                        rps=rps_v,
+                        conn=conn_v,
+                        io_r=io_v,
+                        health="ok",
+                        anomaly=None,
+                        prim=self._client_primary_backends_normal(reg["client_id"]),
+                    )
+
+            elif mode == "dns_stickiness":
+                hot = bs[0]
+                for reg in CLIENT_REGISTRY:
+                    w = reg["base_weight"]
+                    rps_v = total_rps * w * self._noise(1.0, 0.04)
+                    if reg["client_id"] == "booking-api":
+                        conn_v = max(1, int(hot.connections * 0.48 + total_conn * w * 0.28))
+                        io_v = max(0.5, hot.io_timeouts_per_min * 0.42)
+                        anomaly = {
+                            "type": "dns_stickiness",
+                            "message": (
+                                "booking-api pinned to vast-01 (~78% of fleet RPS via cached DNS VIP)—load stays "
+                                "sticky until caches refresh or processes restart."
+                            ),
+                            "recommendation": (
+                                "Contact: Checkout team · Recommendation: Restart or roll booking-api workers to pick "
+                                "up fresh VIP resolution, or shorten DNS TTL at the edge (coordinate with edge/network)."
+                            ),
+                            "severity": "warning",
+                            "article_ref": "Storefront article Feb 2026 — DNS TTL=1s causing sticky routing",
+                        }
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=io_v,
+                            health="warning",
+                            anomaly=anomaly,
+                            prim=["vast-01"],
+                        )
+                        flagged = {"client_id": "booking-api", "team": "Checkout"}
+                    else:
+                        conn_v = max(1, int(total_conn * w * self._noise(0.78, 0.12)))
+                        io_v = max(0.0, total_io * w * 0.06)
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=io_v,
+                            health="ok",
+                            anomaly=None,
+                            prim=self._client_primary_backends_normal(reg["client_id"]),
+                        )
+
+            elif mode == "connection_exhaustion":
+                bad_conn_sum = bs[2].connections + bs[3].connections
+                bad_io_sum = bs[2].io_timeouts_per_min + bs[3].io_timeouts_per_min
+                remainder_weight = sum(r["base_weight"] for r in CLIENT_REGISTRY if r["client_id"] != "legacy-etl-job")
+
+                for reg in CLIENT_REGISTRY:
+                    w = reg["base_weight"]
+                    rps_v = total_rps * w * self._noise(1.0, 0.06)
+                    if reg["client_id"] == "legacy-etl-job":
+                        conn_v = max(1, int(bad_conn_sum * 0.9 + total_conn * 0.015))
+                        io_v = min(22.0, round(bad_io_sum * 0.88 + 4.0, 2))
+                        anomaly = {
+                            "type": "connection_exhaustion",
+                            "message": (
+                                "legacy-etl-job accumulating stale connections on vast-03 / vast-04—not fully reading "
+                                "HTTP responses, so sockets stay occupied and IO stream timeouts climb."
+                            ),
+                            "recommendation": (
+                                "Contact: Data Platform team · Recommendation: Apply the IO stream timeout / full-drain "
+                                "fix—read each S3 response body to completion before reusing connections; add bounded "
+                                "read timeouts where missing."
+                            ),
+                            "severity": "critical",
+                            "article_ref": "Storefront article Feb 2026 — bad S3 client IO stream exhaustion fix",
+                        }
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=max(15.0, io_v),
+                            health="exhausting",
+                            anomaly=anomaly,
+                            prim=["vast-03", "vast-04"],
+                        )
+                        flagged = {"client_id": "legacy-etl-job", "team": "Data Platform"}
+                    else:
+                        scale = (w / remainder_weight) if remainder_weight > 1e-12 else w
+                        pool_other = max(1, total_conn - int(bad_conn_sum * 0.88))
+                        conn_v = max(1, int(pool_other * scale * self._noise(1.0, 0.08)))
+                        io_v = max(0.0, total_io * w * 0.12)
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=io_v,
+                            health="ok",
+                            anomaly=None,
+                            prim=self._client_primary_backends_normal(reg["client_id"]),
+                        )
+
+            elif mode == "cross_dc_throttling":
+                dc_io = bs[6].io_timeouts_per_min + bs[7].io_timeouts_per_min
+                for reg in CLIENT_REGISTRY:
+                    w = reg["base_weight"]
+                    if reg["client_id"] == "kafka-mirror-svc":
+                        rps_v = min(total_rps * 0.42, total_rps * w * 3.05 * self._noise(1.0, 0.04))
+                        conn_v = max(
+                            1,
+                            int((bs[6].connections + bs[7].connections) * 0.52 + total_conn * w * 0.22),
+                        )
+                        io_v = dc_io * 0.48
+                        anomaly = {
+                            "type": "cross_dc_throttling",
+                            "message": (
+                                "kafka-mirror-svc driving a cross-DC replication spike—saturating the vast-07 / vast-08 "
+                                "pool and raising collateral latency on shared VAST capacity."
+                            ),
+                            "recommendation": (
+                                "Contact: Data Infra team · Recommendation: Throttle or reschedule the mirror job and "
+                                "split cross-DC traffic into dedicated upstream pools (see Storefront cross-DC "
+                                "bandwidth throttling article)."
+                            ),
+                            "severity": "warning",
+                            "article_ref": "Storefront article Feb 2026 — cross-DC bandwidth throttling",
+                        }
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=io_v,
+                            health="warning",
+                            anomaly=anomaly,
+                            prim=["vast-07", "vast-08"],
+                        )
+                        flagged = {"client_id": "kafka-mirror-svc", "team": "Data Infra"}
+                    else:
+                        rps_v = total_rps * w * self._noise(0.92, 0.1)
+                        conn_v = max(1, int(total_conn * w * self._noise(0.82, 0.1)))
+                        io_v = max(0.0, total_io * w * 0.25)
+                        append_row(
+                            reg,
+                            rps=rps_v,
+                            conn=conn_v,
+                            io_r=io_v,
+                            health="ok",
+                            anomaly=None,
+                            prim=self._client_primary_backends_normal(reg["client_id"]),
+                        )
+
+            else:
+                for reg in CLIENT_REGISTRY:
+                    w = reg["base_weight"]
+                    rps_v = total_rps * w * self._noise(1.0, 0.06)
+                    conn_v = max(1, int(total_conn * w * self._noise(1.0, 0.1)))
+                    io_v = max(0.0, total_io * w * 0.08)
+                    append_row(
+                        reg,
+                        rps=rps_v,
+                        conn=conn_v,
+                        io_r=io_v,
+                        health="ok",
+                        anomaly=None,
+                        prim=self._client_primary_backends_normal(reg["client_id"]),
+                    )
+
+            rows.sort(key=lambda x: x["connections"], reverse=True)
+
+            return {
+                "clients": rows,
+                "flagged_client": flagged,
+            }
