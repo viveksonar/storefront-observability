@@ -6,45 +6,12 @@ import IncidentPanel from './components/IncidentPanel'
 import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
-
-const API = ''  // same origin; dev: Vite proxy, prod: nginx → backend
-
-/** Safer than raw .json() — HTML 502/404 pages from nginx break JSON.parse */
-async function fetchJson(url) {
-  const res = await fetch(url)
-  const ct = (res.headers.get('content-type') || '').toLowerCase()
-  if (!ct.includes('application/json')) {
-    const snippet = (await res.text()).slice(0, 120)
-    throw new Error(`${url} → HTTP ${res.status}, expected JSON. ${snippet}`)
-  }
-  const data = await res.json()
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
-  return data
-}
-
-/** Retries transient prod failures (LB/nginx cold 502/503, brief connection drops). */
-async function fetchJsonWithRetry(url, maxAttempts = 3) {
-  let lastErr
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      return await fetchJson(url)
-    } catch (e) {
-      lastErr = e
-      const msg = e?.message || String(e)
-      const retryable =
-        msg.includes('502') ||
-        msg.includes('503') ||
-        msg.includes('504') ||
-        msg.includes('Failed to fetch') ||
-        e?.name === 'TypeError'
-      if (!retryable || attempt === maxAttempts - 1) throw e
-      await new Promise((r) => setTimeout(r, 120 * (attempt + 1)))
-    }
-  }
-  throw lastErr
-}
+import ForecastTab from './components/ForecastTab'
+import { apiUrl, fetchJsonWithRetry } from './api.js'
 
 export default function App() {
+  const [mainView, setMainView] = useState('dashboard')
+
   const [backends, setBackends]   = useState(null)
   const [summary, setSummary]     = useState(null)
   const [anomalies, setAnomalies] = useState(null)
@@ -63,12 +30,12 @@ export default function App() {
 
   const fetchAll = useCallback(async () => {
     const urls = [
-      `${API}/metrics/backends`,
-      `${API}/metrics/summary`,
-      `${API}/metrics/anomalies`,
-      `${API}/metrics/history`,
-      `${API}/incidents`,
-      `${API}/incidents/active`,
+      apiUrl('/metrics/backends'),
+      apiUrl('/metrics/summary'),
+      apiUrl('/metrics/anomalies'),
+      apiUrl('/metrics/history'),
+      apiUrl('/incidents'),
+      apiUrl('/incidents/active'),
     ]
     const results = await Promise.allSettled(urls.map((u) => fetchJsonWithRetry(u)))
 
@@ -109,7 +76,7 @@ export default function App() {
     if (criticalFailStreakRef.current >= 2) {
       const hint =
         typeof window !== 'undefined' && window.location.port === '5173'
-          ? ' Local dev: run uvicorn on :8000; Vite must proxy /metrics, /simulate, /incidents.'
+          ? ' Local dev: uvicorn on :8000 — or set frontend/.env.local → VITE_API_BASE_URL=http://127.0.0.1:8000 (bypass Vite proxy). Restart npm run dev.'
           : ' Production: check backend pods, ingress → backend routes, and nginx API regex (frontend/nginx.conf).'
       setError(`API degraded — ${rejected.slice(0, 2).join(' · ')} ${hint}`)
     }
@@ -122,7 +89,7 @@ export default function App() {
   }, [fetchAll])
 
   const triggerMode = async (newMode) => {
-    await fetch(`${API}/simulate/${newMode}`, { method: 'POST' })
+    await fetch(apiUrl(`/simulate/${newMode}`), { method: 'POST' })
     setMode(newMode)
     setTimeout(fetchAll, 200)
   }
@@ -131,7 +98,7 @@ export default function App() {
     setReportIncidentId(id)
     setReportMarkdown('')
     try {
-      const text = await fetch(`${API}/incidents/${id}/report`).then(r => r.text())
+      const text = await fetch(apiUrl(`/incidents/${id}/report`)).then(r => r.text())
       setReportMarkdown(text)
     } catch {
       setReportMarkdown('Failed to load report.')
@@ -152,34 +119,75 @@ export default function App() {
 
   const current = modeLabel[mode] || modeLabel.normal
 
+  const tabBtn = (id, label) => {
+    const active = mainView === id
+    return (
+      <button
+        type="button"
+        onClick={() => setMainView(id)}
+        style={{
+          fontFamily: 'var(--font-ui)',
+          fontSize: 13,
+          fontWeight: 600,
+          letterSpacing: '-0.02em',
+          padding: '6px 4px 10px',
+          marginRight: 16,
+          background: 'transparent',
+          border: 'none',
+          borderBottom: active ? '2px solid var(--green)' : '2px solid transparent',
+          color: active ? 'var(--text)' : 'var(--text-muted)',
+          cursor: 'pointer',
+          transition: 'color 0.2s ease, border-color 0.2s ease, opacity 0.2s ease',
+          opacity: active ? 1 : 0.9,
+        }}
+      >
+        {label}
+      </button>
+    )
+  }
+
   return (
     <div style={{ position: 'relative', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
       <div style={{ minHeight: '100vh', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
 
         {/* Header */}
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid var(--border)', paddingBottom: 14 }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
-                Storefront Observability
-              </span>
-              <span style={{
-                fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-                padding: '2px 8px', borderRadius: 3, border: '1px solid',
-                color: current.color, borderColor: current.color,
-                background: current.color + '15',
-                animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
-                letterSpacing: '0.05em'
-              }}>
-                {current.label}
-              </span>
+        <div style={{
+          display: 'flex',
+          alignItems: 'flex-start',
+          justifyContent: 'space-between',
+          gap: 16,
+          flexWrap: 'wrap',
+          borderBottom: '0.5px solid var(--border)',
+          paddingBottom: 14,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 28, flexWrap: 'wrap', flex: '1 1 auto' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
+                  Storefront Observability
+                </span>
+                <span style={{
+                  fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                  padding: '2px 8px', borderRadius: 3, border: '1px solid',
+                  color: current.color, borderColor: current.color,
+                  background: current.color + '15',
+                  animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
+                  letterSpacing: '0.05em'
+                }}>
+                  {current.label}
+                </span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+                S3 load balancer health · VAST backend pool monitoring · 8 nodes
+              </div>
             </div>
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-              S3 load balancer health · VAST backend pool monitoring · 8 nodes
+            <div style={{ display: 'flex', alignItems: 'center', paddingTop: 2 }}>
+              {tabBtn('dashboard', 'Live Dashboard')}
+              {tabBtn('forecast', 'Forecast')}
             </div>
           </div>
-          <div style={{ textAlign: 'right' }}>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
             {error
               ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
               : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
@@ -189,29 +197,27 @@ export default function App() {
           </div>
         </div>
 
-        {/* Summary bar */}
-        {summary && <SummaryBar summary={summary} />}
+        {mainView === 'dashboard' && summary && <SummaryBar summary={summary} />}
 
-        {/* Main content */}
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
-
-          {/* Left: backend grid */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {backends && <BackendGrid backends={backends} />}
-            <TimelineChart history={history} />
+        {mainView === 'dashboard' ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {backends && <BackendGrid backends={backends} />}
+              <TimelineChart history={history} />
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+              {anomalies && <AnomalyPanel anomalies={anomalies} />}
+              <IncidentPanel
+                incidents={incidents}
+                activeIncident={activeIncident}
+                onViewReport={openReport}
+              />
+              <FailureControls currentMode={mode} onTrigger={triggerMode} />
+            </div>
           </div>
-
-          {/* Right: anomalies, incidents, controls */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            {anomalies && <AnomalyPanel anomalies={anomalies} />}
-            <IncidentPanel
-              incidents={incidents}
-              activeIncident={activeIncident}
-              onViewReport={openReport}
-            />
-            <FailureControls currentMode={mode} onTrigger={triggerMode} />
-          </div>
-        </div>
+        ) : (
+          <ForecastTab />
+        )}
 
       </div>
 

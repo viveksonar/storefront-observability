@@ -1,12 +1,18 @@
+import logging
 import os
 import socket
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
 from simulator import MetricSimulator
 import incident_store
 import uvicorn
+
+logger = logging.getLogger(__name__)
 
 
 def _resolve_listen_port() -> int:
@@ -30,6 +36,28 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_errors_return_json(request: Request, call_next):
+    """Prevent HTML 500 bodies — frontend fetchJson expects application/json."""
+    try:
+        return await call_next(request)
+    except StarletteHTTPException:
+        raise
+    except RequestValidationError:
+        raise
+    except Exception:
+        logger.exception("Unhandled server error on %s", request.url.path)
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": "internal_server_error",
+                "path": str(request.url.path),
+                "detail": "Internal Server Error",
+            },
+        )
+
 
 sim = MetricSimulator()
 
@@ -81,6 +109,27 @@ def trigger_failure(failure_mode: str):
 def get_history():
     """Last 60 ticks of aggregate metrics for the timeline chart."""
     return sim.get_history()
+
+
+@app.get("/metrics/forecast")
+@app.get("/metrics/forecast/")
+def get_forecast():
+    """
+    Per-backend connection trend (linear regression) and hours to warning/critical.
+
+    Mirrors Agoda's Kafka capacity lesson: saturation is lagging — growth rate is leading.
+    Scenarios scale the trend (promotional 2×, major event 3×) like a manual Vulcan preview.
+    """
+    return sim.get_forecast()
+
+
+@app.get("/forecast")
+def get_forecast_prefix_alias():
+    """
+    Compatibility: some misconfigured proxies strip the `/metrics` path prefix.
+    Prefer GET /metrics/forecast in production.
+    """
+    return sim.get_forecast()
 
 
 @app.get("/incidents")
