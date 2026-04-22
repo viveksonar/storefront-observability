@@ -20,7 +20,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 import incident_store
 
@@ -29,6 +29,123 @@ logger = logging.getLogger(__name__)
 BACKEND_COUNT = 8          # VAST provides a pool of virtual IPs
 MAX_CONNECTIONS = 500      # Per-backend connection limit (realistic for VAST compute node)
 TOTAL_RPS = 12000          # Agoda's data platform generates significant S3 traffic
+
+# Forecast thresholds (leading indicator vs lagging saturation — Kafka capacity playbook)
+FORECAST_WARNING_CONN = int(MAX_CONNECTIONS * 0.65)    # 325
+FORECAST_CRITICAL_CONN = int(MAX_CONNECTIONS * 0.85)   # 425
+
+VULCAN_NOTE = (
+    "This is the manual version of what Vulcan automates. Vulcan integrates Gatekeeper "
+    "and historical capacity data to make these decisions automatically across 1,500 services."
+)
+
+
+def _linear_slope_and_r2(ys: List[float]) -> tuple[Optional[float], float]:
+    """
+    OLS slope and R² (y vs x = 0..n-1, one sample per simulated tick ≈ 1 second).
+    slope = (n*sum(x*y) - sum(x)*sum(y)) / (n*sum(x^2) - sum(x)^2)
+    R² uses Pearson correlation squared (simple linear regression).
+    """
+    n = len(ys)
+    if n < 2:
+        return None, 0.0
+    xs = list(range(n))
+    sx = float(sum(xs))
+    sy = float(sum(ys))
+    sxx = float(sum(x * x for x in xs))
+    sxy = float(sum(x * y for x, y in zip(xs, ys)))
+    denom = n * sxx - sx * sx
+    if abs(denom) < 1e-18:
+        return None, 0.0
+    slope = (n * sxy - sx * sy) / denom
+
+    mx = sx / n
+    my = sy / n
+    ss_xy = sum((float(x) - mx) * (float(y) - my) for x, y in zip(xs, ys))
+    ss_xx = sum((float(x) - mx) ** 2 for x in xs)
+    ss_yy = sum((float(y) - my) ** 2 for y in ys)
+    if ss_xx <= 1e-18 or ss_yy <= 1e-18:
+        r2 = 0.0 if ss_yy <= 1e-18 else 1.0
+    else:
+        r = ss_xy / ((ss_xx ** 0.5) * (ss_yy ** 0.5))
+        r = max(-1.0, min(1.0, r))
+        r2 = r * r
+
+    return slope, r2
+
+
+def _forecast_confidence_label(n_ticks: int) -> str:
+    if n_ticks < 5:
+        return "insufficient"
+    if n_ticks < 10:
+        return "low"
+    if n_ticks < 30:
+        return "medium"
+    return "high"
+
+
+def _hours_pair_for_scenario(
+    current: float,
+    rate_per_hour: float,
+    multiplier: float,
+) -> tuple[Optional[float], Optional[float]]:
+    """
+    Hours until warning (325 conn) and critical (425 conn) connection counts.
+    If rate <= 0 or effective growth <= 0, returns (None, None).
+    """
+    if rate_per_hour <= 0:
+        return None, None
+    eff = rate_per_hour * multiplier
+    if eff <= 0:
+        return None, None
+
+    def level_hours(threshold: int) -> float:
+        if current >= threshold:
+            return 0.0
+        return round((threshold - current) / eff, 1)
+
+    return (
+        level_hours(FORECAST_WARNING_CONN),
+        level_hours(FORECAST_CRITICAL_CONN),
+    )
+
+
+def _fleet_recommendation(
+    mins: Dict[str, Optional[float]],
+    most_backend: Optional[str],
+) -> str:
+    """Scenario-aware TPM-facing copy — mirrors Agoda Kafka leading-indicator narrative."""
+    n_n = mins.get("normal")
+    n2 = mins.get("spike_2x")
+    n3 = mins.get("spike_3x")
+    finite = [(k, v) for k, v in mins.items() if v is not None]
+    if not finite:
+        return (
+            "Fleet-wide connection growth is flat or declining — leading indicator is stable. "
+            "Pair with Gatekeeper traffic limits before peak; saturation is a lagging signal "
+            "(Agoda Kafka engineering: disk % fired too late)."
+        )
+
+    worst_key, worst_val = min(finite, key=lambda kv: kv[1])
+    label = {"normal": "baseline traffic", "spike_2x": "2× promotional spike", "spike_3x": "3× major event"}.get(
+        worst_key, worst_key
+    )
+    who = f" ({most_backend})" if most_backend else ""
+    if worst_val < 24:
+        return (
+            f"Minimum time to critical under {label}{who} is under 24h — escalate capacity review "
+            "and load-shedding options now. This manual view matches what Vulcan automates against "
+            "historical Gatekeeper data across services."
+        )
+    if worst_val <= 72:
+        return (
+            f"Minimum time to critical under {label}{who} is within ~3 days — schedule mitigation "
+            "before peak. Growth rate beats lagging connection % alone (Kafka capacity lesson)."
+        )
+    return (
+        f"Fleet minimum hours to critical under {label}{who} are comfortable (>72h) at current "
+        "trends — keep monitoring growth rate as the leading indicator."
+    )
 
 
 @dataclass
@@ -231,6 +348,7 @@ class MetricSimulator:
             "tick": self.tick,
             "timestamp": time.time(),
             "total_connections": total_connections,
+            "connections_per_backend": [b.connections for b in self.backends],
             "avg_latency_p99_ms": round(avg_latency, 1),
             "total_rps": round(total_rps, 0),
             "io_timeouts_per_min": round(io_timeouts, 2),
@@ -396,3 +514,156 @@ class MetricSimulator:
         with self._lock:
             self._tick()
             return {"history": list(self.history)}
+
+    def get_forecast(self) -> Dict[str, Any]:
+        """
+        Linear trend on per-backend connection counts / last ≤60 ticks.
+        Leading indicator analogue to Agoda Kafka growth-rate planning (vs lagging disk%).
+        """
+        MIN_TICKS = 5
+        with self._lock:
+            self._tick()
+            history_snapshot = list(self.history)
+            backends_snap = [
+                {
+                    "id": b.id,
+                    "connections": b.connections,
+                    "is_cross_dc": b.is_cross_dc,
+                }
+                for b in self.backends
+            ]
+
+        usable: List[Dict[str, Any]] = []
+        for row in history_snapshot:
+            cpb = row.get("connections_per_backend")
+            if isinstance(cpb, list) and len(cpb) == BACKEND_COUNT:
+                usable.append(row)
+
+        n_ticks = len(usable)
+        ticks_reported = min(n_ticks, 60)
+
+        if n_ticks < MIN_TICKS:
+            return {
+                "forecasts": [],
+                "fleet_summary": {
+                    "most_at_risk_backend": None,
+                    "min_hours_to_critical_normal": None,
+                    "min_hours_to_critical_spike_2x": None,
+                    "min_hours_to_critical_spike_3x": None,
+                    "recommendation": (
+                        "Need at least five one-second samples with per-backend connection counts "
+                        "before regression is meaningful. Wait ~5 seconds after startup or refresh."
+                    ),
+                },
+                "data_confidence": "insufficient",
+                "ticks_available": n_ticks,
+                "message": (
+                    "Insufficient history: linear regression requires at least 5 ticks of "
+                    "per-backend connection samples (~5 seconds of simulator uptime)."
+                ),
+                "vulcan_note": VULCAN_NOTE,
+            }
+
+        conf_label = _forecast_confidence_label(n_ticks)
+
+        forecasts: List[Dict[str, Any]] = []
+
+        for j in range(BACKEND_COUNT):
+            ys = [float(row["connections_per_backend"][j]) for row in usable]
+            slope, r2 = _linear_slope_and_r2(ys)
+            current = backends_snap[j]["connections"]
+            util_pct = round(current / MAX_CONNECTIONS * 100, 1)
+
+            if slope is None:
+                growth_rate_per_hour = 0.0
+                rate_hour = 0.0
+            else:
+                rate_hour = slope * 3600.0
+                growth_rate_per_hour = round(rate_hour, 1)
+
+            # R² filters spurious slopes on random-walk connection noise (flat normal mode).
+            is_growing = (
+                slope is not None
+                and slope > 0
+                and r2 >= 0.08
+                and rate_hour >= 2.0
+            )
+
+            hw_norm, hc_norm = _hours_pair_for_scenario(float(current), rate_hour, 1.0)
+            hw_2, hc_2 = _hours_pair_for_scenario(float(current), rate_hour, 2.0)
+            hw_3, hc_3 = _hours_pair_for_scenario(float(current), rate_hour, 3.0)
+
+            if not is_growing:
+                hw_norm = hw_2 = hw_3 = hc_norm = hc_2 = hc_3 = None
+
+            at_warning = current >= FORECAST_WARNING_CONN
+            at_critical = current >= FORECAST_CRITICAL_CONN
+
+            forecasts.append({
+                "backend_id": backends_snap[j]["id"],
+                "current_connections": current,
+                "connection_utilisation_pct": util_pct,
+                "growth_rate_per_hour": growth_rate_per_hour,
+                "is_growing": is_growing,
+                "hours_to_warning": {
+                    "normal": hw_norm,
+                    "spike_2x": hw_2,
+                    "spike_3x": hw_3,
+                },
+                "hours_to_critical": {
+                    "normal": hc_norm,
+                    "spike_2x": hc_2,
+                    "spike_3x": hc_3,
+                },
+                "confidence": conf_label,
+                "is_cross_dc": backends_snap[j]["is_cross_dc"],
+                "already_at_risk": at_warning or at_critical,
+                "already_at_risk_level": "critical" if at_critical else ("warning" if at_warning else None),
+            })
+
+        def _finite_min(vals: List[Optional[float]]) -> Optional[float]:
+            nums = [v for v in vals if v is not None]
+            if not nums:
+                return None
+            return min(nums)
+
+        hc_normal_list = [f["hours_to_critical"]["normal"] for f in forecasts]
+        hc_2_list = [f["hours_to_critical"]["spike_2x"] for f in forecasts]
+        hc_3_list = [f["hours_to_critical"]["spike_3x"] for f in forecasts]
+
+        min_norm = _finite_min(hc_normal_list)
+        min_2 = _finite_min(hc_2_list)
+        min_3 = _finite_min(hc_3_list)
+
+        scored: List[tuple[float, str]] = []
+        for f in forecasts:
+            trip = [
+                f["hours_to_critical"]["normal"],
+                f["hours_to_critical"]["spike_2x"],
+                f["hours_to_critical"]["spike_3x"],
+            ]
+            finite_trip = [t for t in trip if t is not None]
+            if not finite_trip:
+                continue
+            scored.append((min(finite_trip), f["backend_id"]))
+        scored.sort(key=lambda x: (x[0], x[1]))
+        most_b = scored[0][1] if scored else None
+
+        recommendation = _fleet_recommendation(
+            {"normal": min_norm, "spike_2x": min_2, "spike_3x": min_3},
+            most_b,
+        )
+
+        return {
+            "forecasts": forecasts,
+            "fleet_summary": {
+                "most_at_risk_backend": most_b,
+                "min_hours_to_critical_normal": min_norm,
+                "min_hours_to_critical_spike_2x": min_2,
+                "min_hours_to_critical_spike_3x": min_3,
+                "recommendation": recommendation,
+            },
+            "data_confidence": conf_label,
+            "ticks_available": ticks_reported,
+            "vulcan_note": VULCAN_NOTE,
+        }
