@@ -7,6 +7,7 @@ import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
 import ForecastTab from './components/ForecastTab'
+import ClientAttributionPanel from './components/ClientAttributionPanel'
 import { apiUrl, fetchJsonWithRetry } from './api.js'
 
 export default function App() {
@@ -24,6 +25,7 @@ export default function App() {
   const [activeIncident, setActiveIncident] = useState(null)
   const [reportIncidentId, setReportIncidentId] = useState(null)
   const [reportMarkdown, setReportMarkdown] = useState('')
+  const [clientMetrics, setClientMetrics] = useState(null)
 
   /** Only show the red banner after repeated critical failures — avoids flicker on single bad poll. */
   const criticalFailStreakRef = useRef(0)
@@ -33,6 +35,7 @@ export default function App() {
       apiUrl('/metrics/backends'),
       apiUrl('/metrics/summary'),
       apiUrl('/metrics/anomalies'),
+      apiUrl('/metrics/clients'),
       apiUrl('/metrics/history'),
       apiUrl('/incidents'),
       apiUrl('/incidents/active'),
@@ -44,9 +47,10 @@ export default function App() {
     const b = val(0)
     const s = val(1)
     const a = val(2)
-    const h = val(3)
-    const incList = val(4)
-    const active = results[5].status === 'fulfilled' ? results[5].value : undefined
+    const cm = val(3)
+    const h = val(4)
+    const incList = val(5)
+    const active = results[6].status === 'fulfilled' ? results[6].value : undefined
 
     if (b) setBackends(b)
     if (s) {
@@ -54,6 +58,7 @@ export default function App() {
       setMode(s.mode)
     }
     if (a) setAnomalies(a)
+    if (cm) setClientMetrics(cm)
     if (h) setHistory(h.history || [])
     if (incList !== null && incList !== undefined) setIncidents(Array.isArray(incList) ? incList : [])
     if (active !== undefined) setActiveIncident(active)
@@ -204,6 +209,7 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {backends && <BackendGrid backends={backends} />}
               <TimelineChart history={history} />
+              {clientMetrics && <ClientAttributionPanel data={clientMetrics} />}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {anomalies && <AnomalyPanel anomalies={anomalies} />}
