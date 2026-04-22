@@ -23,6 +23,7 @@ spec:
       containers:
         - name: backend
           image: observability/backend:latest
+          imagePullPolicy: Always
           ports:
             - containerPort: 8000
           resources:

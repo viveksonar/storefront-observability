@@ -1,0 +1,92 @@
+# Deploy when `main` changes: build/push Docker images to DigitalOcean Container
+# Registry, then apply Kustomize manifests to your DOKS cluster.
+#
+# Required GitHub repository secrets:
+#   DIGITALOCEAN_ACCESS_TOKEN — API token with registry read/write + Kubernetes access
+#   DIGITALOCEAN_CLUSTER_NAME — exact name of your Kubernetes cluster (e.g. storefront-prod)
+#
+# Optional: create the registry pull secret once in the namespace (not done by this workflow):
+#   kubectl create secret docker-registry registry-docr \
+#     --docker-server=registry.digitalocean.com \
+#     --docker-username=digitalocean_oauth \
+#     --docker-password="$DIGITALOCEAN_ACCESS_TOKEN" \
+#     -n storefront-obs
+
+name: Deploy (main)
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: registry.digitalocean.com/storefront-obs-registry
+  K8S_NAMESPACE: storefront-obs
+
+jobs:
+  build-push-deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
+
+      - name: Save kubeconfig
+        run: doctl kubernetes cluster kubeconfig save "${{ secrets.DIGITALOCEAN_CLUSTER_NAME }}"
+
+      - name: Log in to DigitalOcean Container Registry
+        run: doctl registry login --expiry-seconds 600
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/backend:latest
+            ${{ env.REGISTRY }}/backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/frontend:latest
+            ${{ env.REGISTRY }}/frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Deploy with Kustomize
+        run: kubectl apply -k k8s/
+
+      - name: Rollout restart (pull fresh :latest)
+        run: |
+          kubectl rollout restart deployment/storefront-obs-backend deployment/storefront-obs-frontend \
+            -n ${{ env.K8S_NAMESPACE }}
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status deployment/storefront-obs-backend -n ${{ env.K8S_NAMESPACE }} --timeout=180s
+          kubectl rollout status deployment/storefront-obs-frontend -n ${{ env.K8S_NAMESPACE }} --timeout=180s
