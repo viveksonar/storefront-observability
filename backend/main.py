@@ -3,7 +3,9 @@ import socket
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 from simulator import MetricSimulator
+import incident_store
 import uvicorn
 
 
@@ -56,7 +58,7 @@ def get_anomalies():
 @app.get("/metrics/summary")
 def get_summary():
     """
-    Aggregate system health: total RPS, cross-DC traffic %, 
+    Aggregate system health: total RPS, cross-DC traffic %,
     IO timeout rate, and overall load distribution score.
     """
     return sim.get_summary()
@@ -79,6 +81,38 @@ def trigger_failure(failure_mode: str):
 def get_history():
     """Last 60 ticks of aggregate metrics for the timeline chart."""
     return sim.get_history()
+
+
+@app.get("/incidents")
+def list_incidents():
+    """Last 20 incidents, newest first — persisted post-mortem index."""
+    return incident_store.get_incidents(20)
+
+
+@app.get("/incidents/active")
+def active_incident():
+    """Current active incident, or JSON null."""
+    row = incident_store.get_active_incident()
+    return row if row else None
+
+
+@app.get("/incidents/{incident_id}")
+def incident_detail(incident_id: int):
+    """Single incident plus ordered event timeline."""
+    data = incident_store.get_incident_by_id(incident_id)
+    if not data:
+        return {"error": "Incident not found"}
+    return data
+
+
+@app.get("/incidents/{incident_id}/report", response_class=PlainTextResponse)
+def incident_report(incident_id: int):
+    """Auto-generated markdown incident brief for TPM distribution."""
+    md = incident_store.build_incident_report_markdown(incident_id)
+    if md is None:
+        return PlainTextResponse("Incident not found", status_code=404)
+    return md
+
 
 if __name__ == "__main__":
     port = _resolve_listen_port()

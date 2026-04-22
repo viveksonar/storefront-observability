@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback } from 'react'
 import BackendGrid from './components/BackendGrid'
 import SummaryBar from './components/SummaryBar'
 import AnomalyPanel from './components/AnomalyPanel'
+import IncidentPanel from './components/IncidentPanel'
 import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
+import ReportModal from './components/ReportModal'
 
 const API = ''  // proxied via vite — empty = same origin
 
@@ -16,19 +18,28 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState(null)
   const [error, setError]         = useState(null)
 
+  const [incidents, setIncidents] = useState([])
+  const [activeIncident, setActiveIncident] = useState(null)
+  const [reportIncidentId, setReportIncidentId] = useState(null)
+  const [reportMarkdown, setReportMarkdown] = useState('')
+
   const fetchAll = useCallback(async () => {
     try {
-      const [b, s, a, h] = await Promise.all([
+      const [b, s, a, h, incList, active] = await Promise.all([
         fetch(`${API}/metrics/backends`).then(r => r.json()),
         fetch(`${API}/metrics/summary`).then(r => r.json()),
         fetch(`${API}/metrics/anomalies`).then(r => r.json()),
         fetch(`${API}/metrics/history`).then(r => r.json()),
+        fetch(`${API}/incidents`).then(r => r.json()),
+        fetch(`${API}/incidents/active`).then(r => r.json()),
       ])
       setBackends(b)
       setSummary(s)
       setAnomalies(a)
       setHistory(h.history || [])
       setMode(s.mode)
+      setIncidents(Array.isArray(incList) ? incList : [])
+      setActiveIncident(active)
       setLastUpdated(new Date())
       setError(null)
     } catch (e) {
@@ -48,6 +59,22 @@ export default function App() {
     setTimeout(fetchAll, 200)
   }
 
+  const openReport = async (id) => {
+    setReportIncidentId(id)
+    setReportMarkdown('')
+    try {
+      const text = await fetch(`${API}/incidents/${id}/report`).then(r => r.text())
+      setReportMarkdown(text)
+    } catch {
+      setReportMarkdown('Failed to load report.')
+    }
+  }
+
+  const closeReport = () => {
+    setReportIncidentId(null)
+    setReportMarkdown('')
+  }
+
   const modeLabel = {
     normal:                { label: 'NORMAL',               color: 'var(--green)' },
     dns_stickiness:        { label: 'DNS STICKINESS',        color: 'var(--red)'   },
@@ -58,58 +85,75 @@ export default function App() {
   const current = modeLabel[mode] || modeLabel.normal
 
   return (
-    <div style={{ minHeight: '100vh', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ position: 'relative', minHeight: '100vh', display: 'flex', flexDirection: 'column' }}>
 
-      {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid var(--border)', paddingBottom: 14 }}>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
-              Storefront Observability
-            </span>
-            <span style={{
-              fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
-              padding: '2px 8px', borderRadius: 3, border: '1px solid',
-              color: current.color, borderColor: current.color,
-              background: current.color + '15',
-              animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
-              letterSpacing: '0.05em'
-            }}>
-              {current.label}
-            </span>
-          </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
-            S3 load balancer health · VAST backend pool monitoring · 8 nodes
-          </div>
-        </div>
-        <div style={{ textAlign: 'right' }}>
-          {error
-            ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
-            : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
-                updated {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'} · polling 3s
+      <div style={{ minHeight: '100vh', padding: '20px 24px', display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderBottom: '0.5px solid var(--border)', paddingBottom: 14 }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 18, fontWeight: 700, letterSpacing: '-0.02em', color: 'var(--text)' }}>
+                Storefront Observability
               </span>
-          }
+              <span style={{
+                fontFamily: 'var(--font-mono)', fontSize: 10, fontWeight: 500,
+                padding: '2px 8px', borderRadius: 3, border: '1px solid',
+                color: current.color, borderColor: current.color,
+                background: current.color + '15',
+                animation: mode !== 'normal' ? 'pulse-red 2s infinite' : 'none',
+                letterSpacing: '0.05em'
+              }}>
+                {current.label}
+              </span>
+            </div>
+            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4 }}>
+              S3 load balancer health · VAST backend pool monitoring · 8 nodes
+            </div>
+          </div>
+          <div style={{ textAlign: 'right' }}>
+            {error
+              ? <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--red)' }}>{error}</span>
+              : <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)' }}>
+                  updated {lastUpdated ? lastUpdated.toLocaleTimeString() : '—'} · polling 3s
+                </span>
+            }
+          </div>
         </div>
+
+        {/* Summary bar */}
+        {summary && <SummaryBar summary={summary} />}
+
+        {/* Main content */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
+
+          {/* Left: backend grid */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {backends && <BackendGrid backends={backends} />}
+            <TimelineChart history={history} />
+          </div>
+
+          {/* Right: anomalies, incidents, controls */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+            {anomalies && <AnomalyPanel anomalies={anomalies} />}
+            <IncidentPanel
+              incidents={incidents}
+              activeIncident={activeIncident}
+              onViewReport={openReport}
+            />
+            <FailureControls currentMode={mode} onTrigger={triggerMode} />
+          </div>
+        </div>
+
       </div>
 
-      {/* Summary bar */}
-      {summary && <SummaryBar summary={summary} />}
-
-      {/* Main content */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 360px', gap: 16, flex: 1 }}>
-
-        {/* Left: backend grid */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {backends && <BackendGrid backends={backends} />}
-          <TimelineChart history={history} />
-        </div>
-
-        {/* Right: anomalies + controls */}
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-          {anomalies && <AnomalyPanel anomalies={anomalies} />}
-          <FailureControls currentMode={mode} onTrigger={triggerMode} />
-        </div>
-      </div>
+      {reportIncidentId !== null && (
+        <ReportModal
+          incidentId={reportIncidentId}
+          markdown={reportMarkdown}
+          onClose={closeReport}
+        />
+      )}
 
     </div>
   )
