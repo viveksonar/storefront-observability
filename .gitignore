@@ -8,3 +8,6 @@ __pycache__/
 
 # Local K8s deploy overrides (registry / tags notes)
 k8s/deploy.env
+
+frontend/node_modules/
+frontend/dist/
