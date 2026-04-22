@@ -7,43 +7,7 @@ import FailureControls from './components/FailureControls'
 import TimelineChart from './components/TimelineChart'
 import ReportModal from './components/ReportModal'
 import ForecastTab from './components/ForecastTab'
-
-const API = ''  // same origin; dev: Vite proxy, prod: nginx → backend
-
-/** Safer than raw .json() — HTML 502/404 pages from nginx break JSON.parse */
-async function fetchJson(url) {
-  const res = await fetch(url)
-  const ct = (res.headers.get('content-type') || '').toLowerCase()
-  if (!ct.includes('application/json')) {
-    const snippet = (await res.text()).slice(0, 120)
-    throw new Error(`${url} → HTTP ${res.status}, expected JSON. ${snippet}`)
-  }
-  const data = await res.json()
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
-  return data
-}
-
-/** Retries transient prod failures (LB/nginx cold 502/503, brief connection drops). */
-async function fetchJsonWithRetry(url, maxAttempts = 3) {
-  let lastErr
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      return await fetchJson(url)
-    } catch (e) {
-      lastErr = e
-      const msg = e?.message || String(e)
-      const retryable =
-        msg.includes('502') ||
-        msg.includes('503') ||
-        msg.includes('504') ||
-        msg.includes('Failed to fetch') ||
-        e?.name === 'TypeError'
-      if (!retryable || attempt === maxAttempts - 1) throw e
-      await new Promise((r) => setTimeout(r, 120 * (attempt + 1)))
-    }
-  }
-  throw lastErr
-}
+import { apiUrl, fetchJsonWithRetry } from './api.js'
 
 export default function App() {
   const [mainView, setMainView] = useState('dashboard')
@@ -66,12 +30,12 @@ export default function App() {
 
   const fetchAll = useCallback(async () => {
     const urls = [
-      `${API}/metrics/backends`,
-      `${API}/metrics/summary`,
-      `${API}/metrics/anomalies`,
-      `${API}/metrics/history`,
-      `${API}/incidents`,
-      `${API}/incidents/active`,
+      apiUrl('/metrics/backends'),
+      apiUrl('/metrics/summary'),
+      apiUrl('/metrics/anomalies'),
+      apiUrl('/metrics/history'),
+      apiUrl('/incidents'),
+      apiUrl('/incidents/active'),
     ]
     const results = await Promise.allSettled(urls.map((u) => fetchJsonWithRetry(u)))
 
@@ -112,7 +76,7 @@ export default function App() {
     if (criticalFailStreakRef.current >= 2) {
       const hint =
         typeof window !== 'undefined' && window.location.port === '5173'
-          ? ' Local dev: run uvicorn on :8000; Vite must proxy /metrics, /simulate, /incidents.'
+          ? ' Local dev: uvicorn on :8000 — or set frontend/.env.local → VITE_API_BASE_URL=http://127.0.0.1:8000 (bypass Vite proxy). Restart npm run dev.'
           : ' Production: check backend pods, ingress → backend routes, and nginx API regex (frontend/nginx.conf).'
       setError(`API degraded — ${rejected.slice(0, 2).join(' · ')} ${hint}`)
     }
@@ -125,7 +89,7 @@ export default function App() {
   }, [fetchAll])
 
   const triggerMode = async (newMode) => {
-    await fetch(`${API}/simulate/${newMode}`, { method: 'POST' })
+    await fetch(apiUrl(`/simulate/${newMode}`), { method: 'POST' })
     setMode(newMode)
     setTimeout(fetchAll, 200)
   }
@@ -134,7 +98,7 @@ export default function App() {
     setReportIncidentId(id)
     setReportMarkdown('')
     try {
-      const text = await fetch(`${API}/incidents/${id}/report`).then(r => r.text())
+      const text = await fetch(apiUrl(`/incidents/${id}/report`)).then(r => r.text())
       setReportMarkdown(text)
     } catch {
       setReportMarkdown('Failed to load report.')

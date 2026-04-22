@@ -1,39 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-
-const API = ''
-
-async function fetchJson(url) {
-  const res = await fetch(url)
-  const ct = (res.headers.get('content-type') || '').toLowerCase()
-  if (!ct.includes('application/json')) {
-    const snippet = (await res.text()).slice(0, 120)
-    throw new Error(`${url} → HTTP ${res.status}, expected JSON. ${snippet}`)
-  }
-  const data = await res.json()
-  if (!res.ok) throw new Error(`${url} → HTTP ${res.status}`)
-  return data
-}
-
-async function fetchJsonWithRetry(url, maxAttempts = 3) {
-  let lastErr
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    try {
-      return await fetchJson(url)
-    } catch (e) {
-      lastErr = e
-      const msg = e?.message || String(e)
-      const retryable =
-        msg.includes('502') ||
-        msg.includes('503') ||
-        msg.includes('504') ||
-        msg.includes('Failed to fetch') ||
-        e?.name === 'TypeError'
-      if (!retryable || attempt === maxAttempts - 1) throw e
-      await new Promise((r) => setTimeout(r, 120 * (attempt + 1)))
-    }
-  }
-  throw lastErr
-}
+import { fetchForecastWithFallback } from '../api.js'
 
 function fleetMinForScenario(summary, scenario) {
   if (!summary) return null
@@ -126,7 +92,7 @@ export default function ForecastTab() {
 
   const load = useCallback(async () => {
     try {
-      const j = await fetchJsonWithRetry(`${API}/metrics/forecast`)
+      const j = await fetchForecastWithFallback()
       setData(j)
       setError(null)
     } catch (e) {
