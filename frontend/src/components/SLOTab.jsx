@@ -45,6 +45,7 @@ export default function SLOTab({ data }) {
   }
 
   const accent = statusAccent(data.status)
+  const simMode = data.simulator_mode ?? 'normal'
   const pctRem = Number(data.budget_pct_remaining) || 0
   const pctConsumed = Math.min(100, Math.max(0, 100 - pctRem))
   const b1h = Number(data.burn_rate_1h) || 0
@@ -138,8 +139,10 @@ export default function SLOTab({ data }) {
               }}
             />
           </div>
-          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 10 }}>
-            {data.budget_minutes_remaining.toFixed(1)}m of {data.budget_minutes_total.toFixed(1)}m remaining this month
+          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-muted)', marginTop: 10, lineHeight: 1.45 }}>
+            <span style={{ color: 'var(--amber)' }}>{data.budget_minutes_used.toFixed(1)}m</span> consumed ·{' '}
+            <span style={{ color: 'var(--green)' }}>{data.budget_minutes_remaining.toFixed(1)}m</span> pending{' '}
+            <span style={{ color: 'var(--text-dim)' }}>({data.budget_minutes_total.toFixed(1)}m monthly cap)</span>
           </div>
         </div>
 
@@ -186,10 +189,29 @@ export default function SLOTab({ data }) {
             {hexh !== null && hexh !== undefined ? `${Math.round(hexh)}h` : '∞'}
           </div>
           <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: 'var(--blue)', marginTop: 10 }}>
-            at current burn rate
+            {simMode === 'normal' ? 'steady baseline — no active burn trajectory' : 'at current burn rate'}
           </div>
         </div>
       </div>
+
+      {simMode === 'normal' ? (
+        <div
+          style={{
+            fontFamily: 'var(--font-ui)',
+            fontSize: 11,
+            color: 'var(--text-muted)',
+            padding: '10px 14px',
+            background: 'var(--surface-2)',
+            border: '0.5px solid var(--border)',
+            borderRadius: 6,
+            lineHeight: 1.5,
+          }}
+        >
+          <span style={{ color: 'var(--blue)', fontWeight: 600 }}>Baseline simulation:</span> Burn-rate cards show steady traffic (0×).{' '}
+          <span style={{ color: 'var(--text)' }}>Consumed</span> and <span style={{ color: 'var(--text)' }}>pending</span> budget in the card above are unchanged — cumulative burn is{' '}
+          <em>not</em> cleared when you return to normal (only <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10 }}>POST /metrics/slo/reset</span> clears it).
+        </div>
+      ) : null}
 
       {/* SECTION C — Heatmap + impact */}
       <div style={{ display: 'grid', gridTemplateColumns: '1.1fr 1fr', gap: 14, alignItems: 'stretch' }}>
