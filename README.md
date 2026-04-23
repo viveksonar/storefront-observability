@@ -151,7 +151,8 @@ Deployed on **DigitalOcean Kubernetes**, **Singapore** region (**for lower laten
 
 Every configuration decision in the deployment manifests is intentional.
 
-<img src="https://github.com/user-attachments/assets/94b2fd95-5153-4735-80d4-0b69af8d79e6" />
+<img alt="kubernetes flow" src="https://github.com/user-attachments/assets/0c59cf39-fc17-44c4-8fea-11fbbe74e7ca" />
+
 
 
 ### Backend (`storefront-obs-backend`)
