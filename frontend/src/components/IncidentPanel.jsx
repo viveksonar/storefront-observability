@@ -67,7 +67,9 @@ export default function IncidentPanel({ incidents, activeIncident, onViewReport 
             animation: 'pulse-red 2s infinite',
           }}
         >
-          <strong style={{ letterSpacing: '0.06em' }}>ACTIVE INCIDENT</strong>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
+            <strong style={{ letterSpacing: '0.06em' }}>ACTIVE INCIDENT</strong>
+          </div>
           <div style={{ marginTop: 6, color: 'var(--text)', fontSize: 11 }}>
             INC-{activeIncident.id} · {activeIncident.failure_type.replace(/_/g, ' ')}
           </div>

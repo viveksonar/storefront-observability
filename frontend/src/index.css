@@ -155,3 +155,89 @@ body::before {
 .failure-mode-info-btn:focus-visible {
   box-shadow: 0 0 0 2px rgba(61, 140, 255, 0.45);
 }
+
+/* Info “i” — click opens popover to the right of the icon */
+.info-tip-wrap {
+  max-width: 100%;
+}
+
+.info-tip-anchor {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.info-tip-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  font-family: var(--font-ui);
+  font-size: 10px;
+  font-weight: 700;
+  font-style: italic;
+  color: var(--blue);
+  background: var(--surface-2);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 50%;
+  cursor: pointer;
+  outline: none;
+  transition: background 0.15s ease, border-color 0.15s ease;
+}
+
+.info-tip-btn:hover {
+  background: var(--blue-dim);
+  border-color: var(--blue);
+}
+
+.info-tip-btn:focus-visible {
+  box-shadow: 0 0 0 2px rgba(61, 140, 255, 0.45);
+}
+
+.info-tip-anchor .info-tip-popover {
+  position: absolute;
+  left: calc(100% + 8px);
+  right: auto;
+  top: 50%;
+  transform: translateY(-50%);
+  min-width: 200px;
+  max-width: min(320px, calc(100vw - 24px));
+  padding: 10px 12px;
+  font-family: var(--font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.45;
+  color: var(--text);
+  text-align: left;
+  background: var(--surface-2);
+  border: 0.5px solid var(--border-bright);
+  border-radius: 6px;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
+  /* Above in-card UI; grid overlap is handled by lifting the vast-01 card via z-index in BackendGrid */
+  z-index: 50;
+}
+
+/*
+ * Client attribution: table wrapper used to use overflow:hidden (clipped popovers).
+ * Lift thead above tbody so column-header tooltips aren’t painted under the first data row.
+ */
+.client-attribution-panel__table-wrap {
+  overflow: visible;
+}
+
+.client-attribution-panel thead {
+  position: relative;
+  z-index: 15;
+}
+
+.client-attribution-panel .info-tip-wrap {
+  max-width: none;
+}
+
+.client-attribution-panel .info-tip-anchor .info-tip-popover {
+  z-index: 400;
+}

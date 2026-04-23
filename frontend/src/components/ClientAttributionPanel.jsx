@@ -1,5 +1,7 @@
 /** Client-level S3 traffic attribution — FINUDP-style “whose client?” (Jan 2026 narrative). */
 
+import InfoTip from './InfoTip.jsx'
+
 function abbrevTeam(team) {
   const m = {
     Checkout: 'Checkout',
@@ -22,7 +24,6 @@ function healthDot(health) {
         : 'var(--green)'
   return (
     <span
-      title={health}
       style={{
         display: 'inline-block',
         width: 7,
@@ -53,11 +54,12 @@ export default function ClientAttributionPanel({ data }) {
 
   return (
     <div
+      className="client-attribution-panel"
       style={{
         background: 'var(--surface)',
         border: '0.5px solid var(--border)',
         borderRadius: 6,
-        overflow: 'hidden',
+        overflow: 'visible',
       }}
     >
       <div
@@ -71,18 +73,20 @@ export default function ClientAttributionPanel({ data }) {
         }}
       >
         <div style={{ minWidth: 0 }}>
-          <span
-            style={{
-              fontFamily: 'var(--font-ui)',
-              fontSize: 10,
-              fontWeight: 600,
-              color: 'var(--text-muted)',
-              textTransform: 'uppercase',
-              letterSpacing: '0.06em',
-            }}
-          >
-            Client attribution
-          </span>
+          <InfoTip content="Which service is causing backend degradation. Tells you who to call, not just what broke.">
+            <span
+              style={{
+                fontFamily: 'var(--font-ui)',
+                fontSize: 10,
+                fontWeight: 600,
+                color: 'var(--text-muted)',
+                textTransform: 'uppercase',
+                letterSpacing: '0.06em',
+              }}
+            >
+              Client attribution
+            </span>
+          </InfoTip>
           <div style={{ fontFamily: 'var(--font-ui)', fontSize: 9, color: 'var(--text-dim)', marginTop: 3, lineHeight: 1.35 }}>
             S3 traffic by service
           </div>
@@ -105,17 +109,38 @@ export default function ClientAttributionPanel({ data }) {
         </span>
       </div>
 
-      {/* SECTION A */}
-      <div style={{ overflow: 'hidden' }}>
+      <div className="client-attribution-panel__table-wrap">
         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 10 }}>
           <thead>
             <tr style={{ borderBottom: '0.5px solid var(--border)', background: 'var(--surface-2)' }}>
-              <th style={{ textAlign: 'left', padding: '5px 8px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>Service</th>
-              <th style={{ textAlign: 'left', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>Team</th>
-              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>RPS%</th>
-              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>Conn</th>
-              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>IO/m</th>
-              <th style={{ textAlign: 'center', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)' }}>●</th>
+              <th style={{ textAlign: 'left', padding: '5px 8px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                <InfoTip content="Owning service identifier for S3 client traffic (demo registry).">
+                  <span>Service</span>
+                </InfoTip>
+              </th>
+              <th style={{ textAlign: 'left', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                <InfoTip content="Owning team for escalation when this row is flagged.">
+                  <span>Team</span>
+                </InfoTip>
+              </th>
+              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                <InfoTip content="This service's share of total S3 traffic.">
+                  <span>RPS%</span>
+                </InfoTip>
+              </th>
+              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                <InfoTip content="Connections attributed to this service. Climbing = likely culprit.">
+                  <span>Conn</span>
+                </InfoTip>
+              </th>
+              <th style={{ textAlign: 'right', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                <InfoTip content="IO timeouts from this service. Above 5/min = not reading HTTP responses correctly.">
+                  <span>IO/m</span>
+                </InfoTip>
+              </th>
+              <th style={{ textAlign: 'center', padding: '5px 6px', fontFamily: 'var(--font-ui)', fontWeight: 600, color: 'var(--text-muted)', overflow: 'visible', verticalAlign: 'middle' }}>
+                ●
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -143,7 +168,9 @@ export default function ClientAttributionPanel({ data }) {
                   <td style={{ padding: '5px 6px', textAlign: 'right', fontFamily: 'var(--font-mono)', color: row.io_timeout_rate > 8 ? 'var(--red)' : row.io_timeout_rate > 2 ? 'var(--amber)' : 'var(--text-muted)' }}>
                     {row.io_timeout_rate.toFixed(1)}
                   </td>
-                  <td style={{ padding: '5px 6px', textAlign: 'center' }}>{healthDot(row.connection_health)}</td>
+                  <td style={{ padding: '5px 6px', textAlign: 'center', verticalAlign: 'middle' }}>
+                    {healthDot(row.connection_health)}
+                  </td>
                 </tr>
               )
             })}
@@ -151,7 +178,6 @@ export default function ClientAttributionPanel({ data }) {
         </table>
       </div>
 
-      {/* SECTION B */}
       {showAttribution && flaggedClient && (
         <div
           style={{
@@ -162,8 +188,12 @@ export default function ClientAttributionPanel({ data }) {
             background: flaggedClient.anomaly.severity === 'critical' ? 'var(--red-dim)' : 'var(--amber-dim)',
           }}
         >
-          <div style={{ fontFamily: 'var(--font-ui)', fontSize: 10, fontWeight: 700, color: borderAlert, marginBottom: 6 }}>
-            Anomaly attribution — {flaggedClient.client_id}
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+            <InfoTip content="Active issue — service, pattern, owning team, and fix recommendation.">
+              <span style={{ fontFamily: 'var(--font-ui)', fontSize: 10, fontWeight: 700, color: borderAlert }}>
+                Anomaly attribution — {flaggedClient.client_id}
+              </span>
+            </InfoTip>
           </div>
           <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text)', lineHeight: 1.45, marginBottom: 8 }}>
             {flaggedClient.anomaly.message}
@@ -178,8 +208,11 @@ export default function ClientAttributionPanel({ data }) {
             ) : null}
           </div>
           {flaggedClient.anomaly.article_ref && (
-            <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--blue)', marginTop: 8, fontStyle: 'italic' }}>
-              {flaggedClient.anomaly.article_ref}
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 8 }}>
+              <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--blue)', fontStyle: 'italic', flex: 1, minWidth: 0, lineHeight: 1.4 }}>
+                {flaggedClient.anomaly.article_ref}
+              </div>
+              <InfoTip iconOnly content="Source passage from Agoda's engineering blog. Every threshold has a citation." />
             </div>
           )}
         </div>
