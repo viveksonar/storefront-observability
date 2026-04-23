@@ -16,6 +16,7 @@ survives mode transitions and container restarts (SQLite).
 
 import hashlib
 import logging
+import math
 import random
 import threading
 import time
@@ -210,6 +211,11 @@ class MetricSimulator:
         self.slo_budget_used_seconds: float = 0.0
         self.slo_monthly_budget_seconds: float = float(SLO_MONTHLY_BUDGET_SECONDS)
         self.slo_last_score: float = 100.0
+        # UI-facing burn multipliers — exponential decay toward steady state when mode is normal
+        # (avoids snapping 5× → 0× on POST /simulate/normal).
+        self._slo_display_burn_1h: float = 0.0
+        self._slo_display_burn_6h: float = 0.0
+        self._slo_smooth_last_ts: float = 0.0  # 0 = not yet seeded by _update_slo_display_smoothing
         # Parallel HTTP polls call getters concurrently; SQLite + mutable backends must not race.
         self._lock = threading.Lock()
 
@@ -250,6 +256,7 @@ class MetricSimulator:
             self._simulate_cross_dc_throttling()
 
         self._record_history()
+        self._update_slo_display_smoothing()
         self._persist_incident_peaks()
 
     def _persist_incident_peaks(self):
@@ -749,12 +756,17 @@ class MetricSimulator:
                 "budget_minutes_remaining": rem_m,
             }
 
-    def _slo_build_window_data(self) -> tuple[List[Dict[str, Any]], float]:
-        """Rolling 30-day cells with SQLite-backed incident markers + active outage on 'today'."""
+    def _slo_build_window_data(self, budget_minutes_used: float) -> tuple[List[Dict[str, Any]], float]:
+        """
+        Rolling 30-day heatmap: cell minutes sum to budget_minutes_used (same accounting as slo_budget_used_seconds).
+
+        Previously cells used random demo values while the headline budget came from real tick burn — totals disagreed.
+        """
         rows = incident_store.get_incidents(40)
         today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        window: List[Dict[str, Any]] = []
-        total_minutes = 0.0
+
+        # Relative weights per cell (index 0 = oldest day, 29 = today)
+        weights: List[float] = [1.0] * 30
 
         by_date: Dict[str, Dict[str, Any]] = {}
         for inc in rows:
@@ -763,10 +775,40 @@ class MetricSimulator:
                 if st <= 0:
                     continue
                 d = datetime.fromtimestamp(st).replace(hour=0, minute=0, second=0, microsecond=0)
-                key = d.strftime("%Y-%m-%d")
-                by_date[key] = {"failure_type": inc.get("failure_type"), "id": inc.get("id")}
+                dk = d.strftime("%Y-%m-%d")
+                by_date[dk] = {"failure_type": inc.get("failure_type"), "id": inc.get("id")}
+                dur = float(inc.get("duration_seconds") or 0)
+                bump = max(2.0, min(dur / 60.0, 120.0)) if dur > 0 else 4.0
+                for idx in range(30):
+                    day_offset = 29 - idx
+                    dt_cell = today - timedelta(days=day_offset)
+                    if dt_cell.strftime("%Y-%m-%d") == dk:
+                        weights[idx] += bump
             except (TypeError, ValueError, OSError):
                 continue
+
+        if self.mode != "normal":
+            weights[29] += 6.0
+
+        wsum = sum(weights)
+        if wsum <= 1e-12:
+            wsum = 30.0
+            weights = [1.0] * 30
+
+        raw: List[float] = []
+        bu = max(0.0, float(budget_minutes_used))
+        if bu <= 1e-12:
+            rounded = [0.0] * 30
+        else:
+            for wi in weights:
+                raw.append(bu * (wi / wsum))
+            rounded = [round(x, 2) for x in raw]
+            drift = bu - sum(rounded)
+            if rounded:
+                rounded[-1] = round(rounded[-1] + drift, 2)
+
+        window: List[Dict[str, Any]] = []
+        total_minutes = round(sum(rounded), 1) if rounded else 0.0
 
         for i in range(30):
             day_offset = 29 - i
@@ -778,31 +820,23 @@ class MetricSimulator:
             incident_info = by_date.get(key)
             active_today = self.mode != "normal" and day_offset == 0
 
-            rng = random.Random(hash((key, "slo-window")))
-            if active_today:
-                minutes = round(rng.uniform(0.9, 4.2), 2)
-                had_incident = True
-                inc_type = _slo_failure_title(self.mode)
-            elif incident_info:
-                minutes = round(rng.uniform(0.85, 4.5), 2)
-                had_incident = True
+            had_incident = incident_info is not None or active_today
+            inc_type = None
+            if incident_info:
                 ft = str(incident_info.get("failure_type") or "")
                 inc_type = _slo_failure_title(ft)
-            else:
-                minutes = round(rng.uniform(0.05, 0.2), 2)
-                had_incident = False
-                inc_type = None
+            elif active_today:
+                inc_type = _slo_failure_title(self.mode)
 
-            total_minutes += minutes
             window.append({
                 "day": day_num,
                 "date_label": date_label,
-                "minutes_consumed": minutes,
+                "minutes_consumed": rounded[i],
                 "had_incident": had_incident,
                 "incident_type": inc_type,
             })
 
-        return window, round(total_minutes, 1)
+        return window, total_minutes
 
     def _slo_incident_budget_impact(self) -> List[Dict[str, Any]]:
         rows = incident_store.get_incidents(12)
@@ -839,19 +873,58 @@ class MetricSimulator:
         out.sort(key=lambda x: x["pct_of_budget"], reverse=True)
         return out
 
+    def _compute_raw_slo_burn_rates(self) -> tuple[float, float, float]:
+        """
+        Instantaneous burn multipliers from the rolling history (same mode filter as /metrics/slo).
+        Returns (burn_rate_1h, burn_rate_6h, actual_violations_per_second_equiv).
+        """
+        hist_list = list(self.history)
+        recent_violations = sum(
+            1 for row in hist_list
+            if float(row.get("distribution_score", 100)) < SLO_DISTRIBUTION_THRESHOLD
+            and row.get("mode") == self.mode
+        )
+        actual_rate_last_hour = recent_violations / 60.0
+        budget_per_second = self.slo_monthly_budget_seconds / float(SLO_MONTH_SECONDS)
+        burn_rate_1h = actual_rate_last_hour / budget_per_second if budget_per_second > 1e-18 else 0.0
+        burn_rate_6h = round(burn_rate_1h * 0.7, 2)
+        return burn_rate_1h, burn_rate_6h, actual_rate_last_hour
+
+    def _update_slo_display_smoothing(self) -> None:
+        """Ease displayed burn/exhaustion toward steady state instead of snapping when switching to normal."""
+        raw_1h, raw_6h, _ = self._compute_raw_slo_burn_rates()
+        now = time.time()
+
+        if self._slo_smooth_last_ts <= 0:
+            self._slo_smooth_last_ts = now
+            if self.mode != "normal":
+                self._slo_display_burn_1h = raw_1h
+                self._slo_display_burn_6h = raw_6h
+            return
+
+        dt = max(0.05, min(45.0, now - self._slo_smooth_last_ts))
+        self._slo_smooth_last_ts = now
+
+        if self.mode != "normal":
+            self._slo_display_burn_1h = raw_1h
+            self._slo_display_burn_6h = raw_6h
+            return
+
+        # Relax toward 0× / baseline — faster after long gaps (tab resume) via capped dt
+        blend = 1.0 - math.exp(-0.28 * dt)
+        blend = min(1.0, blend)
+        self._slo_display_burn_1h += (0.0 - self._slo_display_burn_1h) * blend
+        self._slo_display_burn_6h += (0.0 - self._slo_display_burn_6h) * blend
+        if self._slo_display_burn_1h < 0.02:
+            self._slo_display_burn_1h = 0.0
+        if self._slo_display_burn_6h < 0.02:
+            self._slo_display_burn_6h = 0.0
+
     def get_slo_metrics(self) -> Dict[str, Any]:
         with self._lock:
             self._tick()
-            hist_list = list(self.history)
-            recent_violations = sum(
-                1 for row in hist_list
-                if float(row.get("distribution_score", 100)) < SLO_DISTRIBUTION_THRESHOLD
-            )
-            actual_rate_last_hour = recent_violations / 60.0
 
             budget_per_second = self.slo_monthly_budget_seconds / float(SLO_MONTH_SECONDS)
-            burn_rate_1h = actual_rate_last_hour / budget_per_second if budget_per_second > 1e-18 else 0.0
-            burn_rate_6h = round(burn_rate_1h * 0.7, 2)
 
             budget_pct_remaining = max(
                 0.0,
@@ -862,11 +935,23 @@ class MetricSimulator:
             budget_minutes_total = round(self.slo_monthly_budget_seconds / 60.0, 1)
             budget_minutes_remaining = round(max(0.0, budget_minutes_total - budget_minutes_used), 1)
 
-            if burn_rate_1h > 1 and actual_rate_last_hour > 1e-12:
-                rem_secs = max(0.0, self.slo_monthly_budget_seconds - self.slo_budget_used_seconds)
-                hours_to_exhaustion = round(rem_secs / actual_rate_last_hour / 3600.0, 1)
+            if self.mode == "normal":
+                burn_rate_1h = round(self._slo_display_burn_1h, 2)
+                burn_rate_6h = round(self._slo_display_burn_6h, 2)
+                smooth_actual = self._slo_display_burn_1h * budget_per_second if budget_per_second > 1e-18 else 0.0
+                if burn_rate_1h > 1 and smooth_actual > 1e-12:
+                    rem_secs = max(0.0, self.slo_monthly_budget_seconds - self.slo_budget_used_seconds)
+                    hours_to_exhaustion = round(rem_secs / smooth_actual / 3600.0, 1)
+                else:
+                    hours_to_exhaustion = None
             else:
-                hours_to_exhaustion = None
+                burn_rate_1h, burn_rate_6h, actual_rate_last_hour = self._compute_raw_slo_burn_rates()
+                burn_rate_1h = round(burn_rate_1h, 2)
+                if burn_rate_1h > 1 and actual_rate_last_hour > 1e-12:
+                    rem_secs = max(0.0, self.slo_monthly_budget_seconds - self.slo_budget_used_seconds)
+                    hours_to_exhaustion = round(rem_secs / actual_rate_last_hour / 3600.0, 1)
+                else:
+                    hours_to_exhaustion = None
 
             if budget_pct_remaining < 20 or burn_rate_1h > 5:
                 status = "critical"
@@ -875,12 +960,13 @@ class MetricSimulator:
             else:
                 status = "healthy"
 
-            window_data, heatmap_total_minutes = self._slo_build_window_data()
+            window_data, heatmap_total_minutes = self._slo_build_window_data(budget_minutes_used)
             incident_budget_impact = self._slo_incident_budget_impact()
 
             return {
                 "slo_target": 99.5,
                 "slo_definition": "99.5% of S3 requests complete with distribution score > 80",
+                "simulator_mode": self.mode,
                 "budget_minutes_total": budget_minutes_total,
                 "budget_minutes_used": budget_minutes_used,
                 "budget_minutes_remaining": budget_minutes_remaining,
