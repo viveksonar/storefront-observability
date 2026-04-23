@@ -1,4 +1,5 @@
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine } from 'recharts'
+import InfoTip from './InfoTip.jsx'
 
 function CustomTooltip({ active, payload }) {
   if (!active || !payload?.length) return null
@@ -42,13 +43,21 @@ export default function TimelineChart({ history }) {
       background: 'var(--surface)', border: '0.5px solid var(--border)',
       borderRadius: 6, padding: '14px 16px',
     }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, gap: 12, flexWrap: 'wrap' }}>
         <span style={{ fontFamily: 'var(--font-ui)', fontSize: 11, fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.06em' }}>
           60-Tick Rolling Window
         </span>
-        <div style={{ display: 'flex', gap: 14 }}>
-          <LegendDot color="var(--green)" label="Distribution Score" />
-          <LegendDot color="var(--amber)" label="Avg P99 Latency (ms)" />
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+          <LegendItem
+            color="var(--green)"
+            label="Distribution Score"
+            tooltip="Distribution score. Collapses instantly on DNS stickiness. Stays high during connection exhaustion — that's the point."
+          />
+          <LegendItem
+            color="var(--amber)"
+            label="Avg P99 Latency (ms)"
+            tooltip="Average P99 across all backends. Gradual climb = connection exhaustion. Spike = cross-DC throttling."
+          />
         </div>
       </div>
 
@@ -59,7 +68,6 @@ export default function TimelineChart({ history }) {
           <YAxis yAxisId="latency" orientation="right" hide />
           <Tooltip content={<CustomTooltip />} />
 
-          {/* 80-point threshold line for distribution score */}
           <ReferenceLine yAxisId="score" y={80} stroke="var(--green)" strokeDasharray="4 4" strokeOpacity={0.3} />
 
           <Line
@@ -92,11 +100,21 @@ export default function TimelineChart({ history }) {
   )
 }
 
-function LegendDot({ color, label }) {
-  return (
+function LegendItem({ color, label, tooltip }) {
+  const line = (
     <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-      <div style={{ width: 20, height: 2, background: color, borderRadius: 1 }} />
-      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{label}</span>
+      <div
+        style={{
+          width: 20,
+          height: 2,
+          background: color,
+          borderRadius: 1,
+        }}
+      />
+      <InfoTip content={tooltip}>
+        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--text-muted)' }}>{label}</span>
+      </InfoTip>
     </div>
   )
+  return line
 }

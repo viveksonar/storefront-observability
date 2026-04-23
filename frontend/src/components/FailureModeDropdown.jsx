@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { FAILURE_MODES } from '../data/failureModes.js'
+import InfoTip from './InfoTip.jsx'
 
 export default function FailureModeDropdown({ currentMode, onTrigger }) {
   const [open, setOpen] = useState(false)
@@ -68,7 +69,7 @@ export default function FailureModeDropdown({ currentMode, onTrigger }) {
         ) : null}
       </div>
 
-      <div className="failure-mode-dropdown-nudge" style={{ position: 'relative', display: 'inline-block' }}>
+      <div className="failure-mode-dropdown-nudge" style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', gap: 8 }}>
         <button
           type="button"
           onClick={() => setOpen((o) => !o)}
@@ -118,44 +119,73 @@ export default function FailureModeDropdown({ currentMode, onTrigger }) {
           >
             {FAILURE_MODES.map((m) => {
               const active = currentMode === m.id
+              const modeTip = m.tooltip || m.description
               return (
-                <button
+                <div
                   key={m.id}
-                  type="button"
-                  role="option"
-                  aria-selected={active}
-                  onClick={() => {
-                    onTrigger(m.id)
-                    setOpen(false)
-                  }}
                   style={{
-                    textAlign: 'left',
-                    padding: '10px 12px',
+                    position: 'relative',
                     borderRadius: 6,
-                    border: `0.5px solid ${active ? m.border + 'aa' : 'transparent'}`,
-                    background: active ? m.color + '18' : 'transparent',
-                    cursor: 'pointer',
-                    transition: 'background 0.15s ease',
-                    outline: 'none',
                   }}
                 >
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: active ? m.color : 'var(--text)' }}>
-                      {m.label}
-                    </span>
-                    {active ? (
-                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: m.color }}>ACTIVE</span>
-                    ) : null}
-                  </div>
-                  <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
-                    {m.description}
-                  </div>
-                  {m.article ? (
-                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', marginTop: 6, fontStyle: 'italic' }}>
-                      {m.article}
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={active}
+                    onClick={() => {
+                      onTrigger(m.id)
+                      setOpen(false)
+                    }}
+                    style={{
+                      width: '100%',
+                      textAlign: 'left',
+                      padding: '10px 40px 10px 12px',
+                      borderRadius: 6,
+                      border: `0.5px solid ${active ? m.border + 'aa' : 'transparent'}`,
+                      background: active ? m.color + '18' : 'transparent',
+                      cursor: 'pointer',
+                      transition: 'background 0.15s ease',
+                      outline: 'none',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 12 }}>
+                      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, fontWeight: 600, color: active ? m.color : 'var(--text)' }}>
+                        {m.label}
+                      </span>
+                      {active ? (
+                        <span style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: m.color }}>
+                          ACTIVE
+                        </span>
+                      ) : null}
                     </div>
-                  ) : null}
-                </button>
+                    <div style={{ fontFamily: 'var(--font-ui)', fontSize: 11, color: 'var(--text-muted)', marginTop: 4, lineHeight: 1.4 }}>
+                      {m.description}
+                    </div>
+                    {m.article ? (
+                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 9, color: 'var(--text-dim)', marginTop: 6, fontStyle: 'italic' }}>
+                        {m.article}
+                      </div>
+                    ) : null}
+                  </button>
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: 10,
+                      right: 10,
+                      pointerEvents: 'auto',
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <InfoTip
+                      iconOnly
+                      content={
+                        active
+                          ? `Currently simulating this failure mode. ${modeTip}`
+                          : modeTip
+                      }
+                    />
+                  </div>
+                </div>
               )
             })}
           </div>
