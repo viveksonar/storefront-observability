@@ -4,7 +4,15 @@ import { useState, useEffect, useRef } from 'react'
  * Trailing "i" — click to open help (not hover on surrounding text).
  * Use iconOnly when there is no label sibling (e.g. next to a chart legend line).
  */
-export default function InfoTip({ content, children, iconOnly = false, className = '', style }) {
+export default function InfoTip({
+  content,
+  children,
+  iconOnly = false,
+  className = '',
+  style,
+  /** When true, popover opens to the left of the (i) — use in tight right edges to avoid viewport overflow. */
+  popoverBefore = false,
+}) {
   const [open, setOpen] = useState(false)
   const wrapRef = useRef(null)
 
@@ -55,7 +63,10 @@ export default function InfoTip({ content, children, iconOnly = false, className
           i
         </span>
         {open ? (
-          <div className="info-tip-popover" role="tooltip">
+          <div
+            className={`info-tip-popover${popoverBefore ? ' info-tip-popover--before' : ''}`.trim()}
+            role="tooltip"
+          >
             {content}
           </div>
         ) : null}

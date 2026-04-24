@@ -96,6 +96,29 @@ body::before {
   }
 }
 
+/* GitHub repo link beside scenario simulator */
+.github-repo-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  margin-right: 10px;
+  padding: 4px;
+  color: var(--text-muted);
+  border-radius: 6px;
+  outline: none;
+  transition: color 0.15s ease, background 0.15s ease;
+}
+
+.github-repo-link:hover {
+  color: var(--text);
+  background: var(--surface-2);
+}
+
+.github-repo-link:focus-visible {
+  box-shadow: 0 0 0 2px rgba(61, 140, 255, 0.45);
+}
+
 /* Popover opens under the (i) control — no horizontal overflow in the header */
 .failure-mode-hint-popover {
   position: absolute;
@@ -219,6 +242,12 @@ body::before {
   box-shadow: 0 10px 32px rgba(0, 0, 0, 0.45);
   /* Above in-card UI; grid overlap is handled by lifting the vast-01 card via z-index in BackendGrid */
   z-index: 50;
+}
+
+/* Opens to the left of the (i) — last summary tiles / narrow viewports avoid horizontal page overflow */
+.info-tip-anchor .info-tip-popover.info-tip-popover--before {
+  left: auto;
+  right: calc(100% + 8px);
 }
 
 /*
