@@ -221,6 +221,12 @@ body::before {
   z-index: 50;
 }
 
+/* Opens to the left of the (i) — last summary tiles / narrow viewports avoid horizontal page overflow */
+.info-tip-anchor .info-tip-popover.info-tip-popover--before {
+  left: auto;
+  right: calc(100% + 8px);
+}
+
 /*
  * Client attribution: table wrapper used to use overflow:hidden (clipped popovers).
  * Lift thead above tbody so column-header tooltips aren’t painted under the first data row.

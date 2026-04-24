@@ -85,7 +85,7 @@ export default function SummaryBar({ summary }) {
             gap: 6,
             minWidth: 0,
           }}>
-            <InfoTip content={m.tooltip}>
+            <InfoTip content={m.tooltip} popoverBefore={i === metrics.length - 1}>
               <span style={{ lineHeight: 1.3 }}>{m.label}</span>
             </InfoTip>
           </div>
