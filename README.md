@@ -253,6 +253,11 @@ helm install monitoring \
 # Apply Storefront monitoring config
 kubectl apply -k k8s
 
+# If `kubectl apply -k k8s` errors with "no matches for kind ServiceMonitor / PrometheusRule",
+# the cluster does not have Prometheus Operator CRDs yet. Install kube-prometheus-stack first
+# (recommended), or apply the upstream CRDs for those two kinds. The GitHub Actions deploy
+# workflow applies the pinned CRD manifests automatically before `kubectl apply -k k8s/`.
+
 # Verify Prometheus is scraping the backend
 kubectl port-forward -n monitoring svc/monitoring-prometheus 9090:9090
 # Visit localhost:9090/targets — storefront-obs-backend should show UP
