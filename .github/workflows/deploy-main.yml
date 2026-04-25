@@ -29,6 +29,8 @@ env:
   K8S_NAMESPACE: storefront-obs
   BACKEND_IMG: storefront-backend
   FRONTEND_IMG: storefront-frontend
+  # Pin CRD definitions to match kube-prometheus-stack’s operator (adjust when upgrading Helm chart).
+  PROMETHEUS_OPERATOR_CRD_REF: v0.76.1
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -143,6 +145,21 @@ jobs:
 
       - name: Save kubeconfig
         run: doctl kubernetes cluster kubeconfig save "${{ secrets.DIGITALOCEAN_CLUSTER_NAME }}"
+
+      # ServiceMonitor / PrometheusRule require monitoring.coreos.com CRDs. Those are installed
+      # by kube-prometheus-stack (or prometheus-operator). CI must not assume they already exist.
+      - name: Ensure Prometheus Operator CRDs (ServiceMonitor, PrometheusRule)
+        run: |
+          set -euo pipefail
+          if kubectl get crd servicemonitors.monitoring.coreos.com >/dev/null 2>&1 \
+            && kubectl get crd prometheusrules.monitoring.coreos.com >/dev/null 2>&1; then
+            echo "Prometheus Operator CRDs already present."
+            exit 0
+          fi
+          BASE="https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/${{ env.PROMETHEUS_OPERATOR_CRD_REF }}/example/prometheus-operator-crd"
+          echo "Installing CRDs from ${BASE} …"
+          kubectl apply --server-side -f "${BASE}/monitoring.coreos.com_servicemonitors.yaml"
+          kubectl apply --server-side -f "${BASE}/monitoring.coreos.com_prometheusrules.yaml"
 
       - name: Apply Kustomize manifests
         run: kubectl apply -k k8s/
