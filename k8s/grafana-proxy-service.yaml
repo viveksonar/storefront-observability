@@ -1,0 +1,21 @@
+# Cross-namespace Grafana proxy for the main Ingress
+#
+# Ingress in storefront-obs can only target Services in the same namespace.
+# kube-prometheus-stack creates the real service as monitoring/monitoring-grafana:80
+# (when Helm release name is "monitoring"). This ExternalName forwards the Ingress
+# backend to that in-cluster FQDN so nginx-ingress can route /grafana without 503s.
+apiVersion: v1
+kind: Service
+metadata:
+  name: monitoring-grafana
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: ingress-bridge
+spec:
+  type: ExternalName
+  externalName: monitoring-grafana.monitoring.svc.cluster.local
+  ports:
+    - name: http
+      port: 80
+      protocol: TCP
+      targetPort: 80

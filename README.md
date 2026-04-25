@@ -234,17 +234,17 @@ helm repo add prometheus-community \
   https://prometheus-community.github.io/helm-charts
 helm repo update
 
-helm install monitoring \
+# Values live in repo: k8s/helm-monitoring-kps-values.yaml — uses the block key
+# grafana.grafana.ini (not a nested grafana: key) so /grafana subpath and redirects
+# (e.g. /grafana/login) stay on-path instead of redirecting the browser to /login
+# and the SPA. Add --skip-crds only if Prometheus operator CRDs are already in the
+# cluster (e.g. from a prior install or the CI pre-apply).
+helm upgrade --install monitoring \
   prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --create-namespace \
-  --set grafana.adminPassword=storefront123 \
-  --set grafana.service.type=ClusterIP \
-  --set grafana.grafana\.ini.server.root_url=https://agoda.viveksonar.in/grafana \
-  --set grafana.grafana\.ini.server.serve_from_sub_path=true \
-  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-  --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false
+  -f k8s/helm-monitoring-kps-values.yaml \
+  --wait --timeout=15m
 
 # The three false flags are critical — without them Prometheus
 # ignores ServiceMonitors, PodMonitors, and PrometheusRules
@@ -265,11 +265,44 @@ kubectl port-forward -n monitoring svc/monitoring-prometheus 9090:9090
 # Import Grafana dashboard
 kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 # Visit localhost:3000 (admin/storefront123)
-# Dashboards → Import → paste k8s/grafana-dashboard.json
+# Optional manual import: Dashboards → Import → paste k8s/grafana-dashboard.json
+
+# The **Storefront** dashboard is also provisioned automatically: `kustomize` builds
+# a ConfigMap (`grafana-storefront-observability`) in `storefront-obs` with
+# `grafana_dashboard: "1"`, which the kube-prometheus Grafana sidecar loads (same
+# mechanism as the built-in Kubernetes dashboards). After `kubectl apply -k k8s`, open
+# Grafana → **Dashboards** → **Browse** and search for **Storefront** (uid
+# `storefront-observability-v1`). The bundled cluster dashboards live under
+# e.g. **Kubernetes / Compute** — use **Browse** if the home page looks empty.
+#
+# A second repo-provisioned dashboard **Kubernetes cluster — capacity snapshot**
+# (`k8s/grafana-k8s-cluster-overview.json`, uid `k8s-cluster-overview-v1`) uses
+# kube-state-metrics, node_exporter, and cAdvisor-style series for a quick cluster view.
+#
+# Prometheus is configured in `k8s/helm-monitoring-kps-values.yaml` to keep
+# kube-state-metrics + node_exporter enabled and to use empty ServiceMonitor /
+# PodMonitor namespace selectors so Prometheus discovers monitors in **every**
+# namespace (including `storefront-obs` for Storefront). Re-apply Helm after editing:
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
 
 # In-cluster URL (single host, path routing via ingress):
 # https://agoda.viveksonar.in/grafana
 ```
+
+`k8s/grafana-proxy-service.yaml` is required for `/grafana`: the main Ingress lives in
+`storefront-obs` but the real Grafana Service is in `monitoring` —Kubernetes Ingress
+cannot cross namespaces, so a same-namespace `ExternalName` Service points at
+`monitoring-grafana.monitoring.svc.cluster.local`. If you used a different Helm
+release name than `monitoring`, change that FQDN to `<release-grafana>.monitoring.svc.cluster.local`.
+
+**503 on `/grafana`:** usually the Ingress had no in-namespace backend, Grafana pods
+in `monitoring` are not ready, or the Helm FQDN above does not match your release name.
+
+**Redirect to `/login` (main site) instead of `/grafana/login`:** Grafana was not
+given a valid `grafana.ini` `root_url` + `serve_from_sub_path` (a wrong `helm --set`
+path is a common cause). After fixing with `k8s/helm-monitoring-kps-values.yaml` and
+`helm upgrade`, `https://agoda.viveksonar.in/grafana/login` should return 200 on
+that path, not 302 to `/login`.
 
 ---
 ## Every design decision and its source
