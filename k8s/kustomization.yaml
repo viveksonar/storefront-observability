@@ -54,6 +54,7 @@ resources:
   - namespace.yaml
   - backend.yaml
   - frontend.yaml
+  - grafana-proxy-service.yaml
   - ingress.yaml
   - servicemonitor.yaml
   - prometheusrule.yaml

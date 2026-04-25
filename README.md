@@ -271,6 +271,15 @@ kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 # https://agoda.viveksonar.in/grafana
 ```
 
+`k8s/grafana-proxy-service.yaml` is required for `/grafana`: the main Ingress lives in
+`storefront-obs` but the real Grafana Service is in `monitoring` —Kubernetes Ingress
+cannot cross namespaces, so a same-namespace `ExternalName` Service points at
+`monitoring-grafana.monitoring.svc.cluster.local`. If you used a different Helm
+release name than `monitoring`, change that FQDN to `<release-grafana>.monitoring.svc.cluster.local`.
+
+**503 on `/grafana`:** usually the Ingress had no in-namespace backend, Grafana pods
+in `monitoring` are not ready, or the Helm FQDN above does not match your release name.
+
 ---
 ## Every design decision and its source
 
