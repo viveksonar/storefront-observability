@@ -265,7 +265,15 @@ kubectl port-forward -n monitoring svc/monitoring-prometheus 9090:9090
 # Import Grafana dashboard
 kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 # Visit localhost:3000 (admin/storefront123)
-# Dashboards → Import → paste k8s/grafana-dashboard.json
+# Optional manual import: Dashboards → Import → paste k8s/grafana-dashboard.json
+
+# The **Storefront** dashboard is also provisioned automatically: `kustomize` builds
+# a ConfigMap (`grafana-storefront-observability`) in `storefront-obs` with
+# `grafana_dashboard: "1"`, which the kube-prometheus Grafana sidecar loads (same
+# mechanism as the built-in Kubernetes dashboards). After `kubectl apply -k k8s`, open
+# Grafana → **Dashboards** → **Browse** and search for **Storefront** (uid
+# `storefront-observability-v1`). The bundled cluster dashboards live under
+# e.g. **Kubernetes / Compute** — use **Browse** if the home page looks empty.
 
 # In-cluster URL (single host, path routing via ingress):
 # https://agoda.viveksonar.in/grafana

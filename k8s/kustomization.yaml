@@ -16,6 +16,13 @@ configMapGenerator:
   - name: storefront-obs-ssl-params
     envs:
       - ssl-params.env
+  # Picked up by kube-prometheus Grafana sidecar (label grafana_dashboard=1, all namespaces).
+  - name: grafana-storefront-observability
+    options:
+      labels:
+        grafana_dashboard: "1"
+    files:
+      - grafana-storefront-observability-v1.json=grafana-dashboard.json
 
 replacements:
   - source:
