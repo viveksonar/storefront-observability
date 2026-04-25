@@ -226,6 +226,47 @@ VITE_PROXY_TARGET=http://127.0.0.1:<port> npm run dev
 (restart npm run dev after changing env.)
 
 ---
+## Prometheus & Grafana
+
+```bash
+# Install kube-prometheus-stack
+helm repo add prometheus-community \
+  https://prometheus-community.github.io/helm-charts
+helm repo update
+
+helm install monitoring \
+  prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --create-namespace \
+  --set grafana.adminPassword=storefront123 \
+  --set grafana.service.type=ClusterIP \
+  --set grafana.grafana\.ini.server.root_url=https://agoda.viveksonar.in/grafana \
+  --set grafana.grafana\.ini.server.serve_from_sub_path=true \
+  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+  --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false
+
+# The three false flags are critical — without them Prometheus
+# ignores ServiceMonitors, PodMonitors, and PrometheusRules
+# outside the monitoring namespace.
+
+# Apply Storefront monitoring config
+kubectl apply -k k8s
+
+# Verify Prometheus is scraping the backend
+kubectl port-forward -n monitoring svc/monitoring-prometheus 9090:9090
+# Visit localhost:9090/targets — storefront-obs-backend should show UP
+
+# Import Grafana dashboard
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+# Visit localhost:3000 (admin/storefront123)
+# Dashboards → Import → paste k8s/grafana-dashboard.json
+
+# In-cluster URL (single host, path routing via ingress):
+# https://agoda.viveksonar.in/grafana
+```
+
+---
 ## Every design decision and its source
 
 | Decision | Reasoning | Source |

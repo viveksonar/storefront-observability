@@ -52,6 +52,13 @@ spec:
                 name: storefront-obs-backend
                 port:
                   number: 8000
+          - path: /grafana
+            pathType: Prefix
+            backend:
+              service:
+                name: monitoring-grafana
+                port:
+                  number: 80
           - path: /
             pathType: Prefix
             backend:
