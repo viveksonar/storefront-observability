@@ -1,0 +1,26 @@
+# kube-prometheus-stack: Grafana under path /grafana (same host as the SPA)
+#
+# Use with:
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring -f k8s/helm-monitoring-kps-values.yaml ...
+#
+# The key is `grafana.ini` (one key name with a dot) under the `grafana:` block, not
+# a nested `grafana:` key — a wrong --set from the command line is easy to mis-indent.
+grafana:
+  adminPassword: storefront123
+  service:
+    type: ClusterIP
+  grafana.ini:
+    server:
+      # Public URL and subpath; must match ingress path /grafana
+      root_url: https://agoda.viveksonar.in/grafana
+      serve_from_sub_path: true
+  # Defensive: env also forces behavior if ini merge ever misbehaves
+  env:
+    GF_SERVER_ROOT_URL: https://agoda.viveksonar.in/grafana
+    GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    GF_SERVER_DOMAIN: agoda.viveksonar.in
+prometheus:
+  prometheusSpec:
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false

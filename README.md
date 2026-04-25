@@ -234,17 +234,17 @@ helm repo add prometheus-community \
   https://prometheus-community.github.io/helm-charts
 helm repo update
 
-helm install monitoring \
+# Values live in repo: k8s/helm-monitoring-kps-values.yaml — uses the block key
+# grafana.grafana.ini (not a nested grafana: key) so /grafana subpath and redirects
+# (e.g. /grafana/login) stay on-path instead of redirecting the browser to /login
+# and the SPA. Add --skip-crds only if Prometheus operator CRDs are already in the
+# cluster (e.g. from a prior install or the CI pre-apply).
+helm upgrade --install monitoring \
   prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
   --create-namespace \
-  --set grafana.adminPassword=storefront123 \
-  --set grafana.service.type=ClusterIP \
-  --set grafana.grafana\.ini.server.root_url=https://agoda.viveksonar.in/grafana \
-  --set grafana.grafana\.ini.server.serve_from_sub_path=true \
-  --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
-  --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-  --set prometheus.prometheusSpec.ruleSelectorNilUsesHelmValues=false
+  -f k8s/helm-monitoring-kps-values.yaml \
+  --wait --timeout=15m
 
 # The three false flags are critical — without them Prometheus
 # ignores ServiceMonitors, PodMonitors, and PrometheusRules
@@ -279,6 +279,12 @@ release name than `monitoring`, change that FQDN to `<release-grafana>.monitorin
 
 **503 on `/grafana`:** usually the Ingress had no in-namespace backend, Grafana pods
 in `monitoring` are not ready, or the Helm FQDN above does not match your release name.
+
+**Redirect to `/login` (main site) instead of `/grafana/login`:** Grafana was not
+given a valid `grafana.ini` `root_url` + `serve_from_sub_path` (a wrong `helm --set`
+path is a common cause). After fixing with `k8s/helm-monitoring-kps-values.yaml` and
+`helm upgrade`, `https://agoda.viveksonar.in/grafana/login` should return 200 on
+that path, not 302 to `/login`.
 
 ---
 ## Every design decision and its source
