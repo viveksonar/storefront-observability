@@ -23,6 +23,12 @@ configMapGenerator:
         grafana_dashboard: "1"
     files:
       - grafana-storefront-observability-v1.json=grafana-dashboard.json
+  - name: grafana-k8s-cluster-overview
+    options:
+      labels:
+        grafana_dashboard: "1"
+    files:
+      - grafana-k8s-cluster-overview-v1.json=grafana-k8s-cluster-overview.json
 
 replacements:
   - source:

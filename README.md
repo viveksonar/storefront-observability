@@ -274,6 +274,16 @@ kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 # Grafana → **Dashboards** → **Browse** and search for **Storefront** (uid
 # `storefront-observability-v1`). The bundled cluster dashboards live under
 # e.g. **Kubernetes / Compute** — use **Browse** if the home page looks empty.
+#
+# A second repo-provisioned dashboard **Kubernetes cluster — capacity snapshot**
+# (`k8s/grafana-k8s-cluster-overview.json`, uid `k8s-cluster-overview-v1`) uses
+# kube-state-metrics, node_exporter, and cAdvisor-style series for a quick cluster view.
+#
+# Prometheus is configured in `k8s/helm-monitoring-kps-values.yaml` to keep
+# kube-state-metrics + node_exporter enabled and to use empty ServiceMonitor /
+# PodMonitor namespace selectors so Prometheus discovers monitors in **every**
+# namespace (including `storefront-obs` for Storefront). Re-apply Helm after editing:
+#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
 
 # In-cluster URL (single host, path routing via ingress):
 # https://agoda.viveksonar.in/grafana

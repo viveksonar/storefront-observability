@@ -19,8 +19,24 @@ grafana:
     GF_SERVER_ROOT_URL: https://agoda.viveksonar.in/grafana
     GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     GF_SERVER_DOMAIN: agoda.viveksonar.in
+# Core Kubernetes scrapes (node_exporter, kube-state-metrics, kubelet/cAdvisor, etc.)
+kubeStateMetrics:
+  enabled: true
+nodeExporter:
+  enabled: true
+defaultRules:
+  create: true
+
 prometheus:
   prometheusSpec:
+    # Standard scrape/eval cadence for cluster-wide targets
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    # Empty selectors = discover ServiceMonitors / PodMonitors in all namespaces
+    serviceMonitorSelector: {}
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelector: {}
+    podMonitorNamespaceSelector: {}
     serviceMonitorSelectorNilUsesHelmValues: false
     podMonitorSelectorNilUsesHelmValues: false
     ruleSelectorNilUsesHelmValues: false
