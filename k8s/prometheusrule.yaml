@@ -1,0 +1,55 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: storefront-slo-alerts
+  namespace: storefront-obs
+  labels:
+    release: monitoring
+    app: kube-prometheus-stack
+spec:
+  groups:
+    - name: storefront.slo
+      interval: 15s
+      rules:
+        - alert: StorefrontDistributionScoreLow
+          expr: storefront_distribution_score < 80
+          for: 30s
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "Storefront SLO violation — distribution score {{ $value }}"
+            description: >
+              Distribution score has been below the SLO threshold of 80
+              for more than 30 seconds. Error budget is burning.
+              Check for DNS stickiness (one backend > 50% RPS) or
+              connection exhaustion (vast-03/04 connections > 425).
+              Source: Storefront engineering article, February 2026.
+            runbook: "https://agoda.viveksonar.in"
+
+        - alert: StorefrontBackendConnectionsCritical
+          expr: storefront_backend_connections > 425
+          for: 15s
+          labels:
+            severity: critical
+            team: platform
+          annotations:
+            summary: "VAST backend {{ $labels.backend_id }} above 85% capacity"
+            description: >
+              Backend {{ $labels.backend_id }} has {{ $value }} active
+              connections, above the critical threshold of 425 (85% of 500
+              hard limit per VAST compute node).
+              Source: Storefront article — connection exhaustion failure mode.
+
+        - alert: StorefrontCrossDCLatencyHigh
+          expr: storefront_backend_latency_p99_ms{is_cross_dc="True"} > 200
+          for: 15s
+          labels:
+            severity: warning
+            team: platform
+          annotations:
+            summary: "Cross-DC backend {{ $labels.backend_id }} P99 above 200ms"
+            description: >
+              Cross-DC backend P99 at {{ $value }}ms — backup replication
+              may be saturating the dedicated VAST pool.
+              Source: Storefront article — cross-DC throttling failure mode.

@@ -6,6 +6,14 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import (
+    Gauge,
+    REGISTRY,
+    PLATFORM_COLLECTOR,
+    PROCESS_COLLECTOR,
+    disable_created_metrics,
+    make_asgi_app,
+)
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from simulator import MetricSimulator
@@ -13,6 +21,36 @@ import incident_store
 import uvicorn
 
 logger = logging.getLogger(__name__)
+
+disable_created_metrics()
+for collector in (PROCESS_COLLECTOR, PLATFORM_COLLECTOR):
+    try:
+        REGISTRY.unregister(collector)
+    except (KeyError, ValueError):
+        pass
+
+storefront_backend_connections = Gauge(
+    "storefront_backend_connections",
+    "Active connections per VAST backend",
+    ["backend_id", "is_cross_dc"],
+)
+storefront_backend_rps = Gauge(
+    "storefront_backend_rps",
+    "Requests per second per VAST backend",
+    ["backend_id"],
+)
+storefront_backend_latency_p99_ms = Gauge(
+    "storefront_backend_latency_p99_ms",
+    "P99 latency milliseconds per VAST backend",
+    ["backend_id", "is_cross_dc"],
+)
+storefront_distribution_score = Gauge(
+    "storefront_distribution_score",
+    (
+        "Load distribution score 0 to 100. 100 equals perfect balance across backends. "
+        "Below 80 triggers SLO violation."
+    ),
+)
 
 
 def _resolve_listen_port() -> int:
@@ -72,7 +110,33 @@ def get_backends():
     Mirrors what a TPM owning Storefront would monitor after the
     DNS load-balancing fix (Storefront article, Feb 2026).
     """
-    return sim.get_backend_metrics()
+    data = sim.get_backend_metrics()
+    backends = data.get("backends", [])
+
+    total_rps = sum(float(b.get("rps", 0.0)) for b in backends)
+    n_backends = len(backends)
+    ideal_rps = (total_rps / n_backends) if n_backends else 0.0
+    if ideal_rps <= 1e-12:
+        distribution_score = 100.0
+    else:
+        max_rps = max(float(b.get("rps", 0.0)) for b in backends)
+        distribution_score = round(max(0.0, 100.0 - (max_rps - ideal_rps) / ideal_rps * 100.0), 1)
+
+    for backend in backends:
+        backend_id = str(backend.get("id", "unknown"))
+        is_cross_dc = str(backend.get("is_cross_dc", False))
+        storefront_backend_connections.labels(
+            backend_id=backend_id,
+            is_cross_dc=is_cross_dc,
+        ).set(float(backend.get("connections", 0.0)))
+        storefront_backend_rps.labels(backend_id=backend_id).set(float(backend.get("rps", 0.0)))
+        storefront_backend_latency_p99_ms.labels(
+            backend_id=backend_id,
+            is_cross_dc=is_cross_dc,
+        ).set(float(backend.get("latency_p99_ms", 0.0)))
+
+    storefront_distribution_score.set(distribution_score)
+    return data
 
 @app.get("/metrics/anomalies")
 def get_anomalies():
@@ -188,6 +252,10 @@ def incident_report(incident_id: int):
     if md is None:
         return PlainTextResponse("Incident not found", status_code=404)
     return md
+
+
+metrics_app = make_asgi_app()
+app.mount("/prometheus-metrics", metrics_app)
 
 
 if __name__ == "__main__":

@@ -61,6 +61,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: storefront-obs-backend
+  labels:
+    app: storefront-obs-backend
 spec:
   # Sticky from the frontend pod (ClusterIP client) so if replicas>1, the same
   # backend instance serves /simulate and all /metrics* for that path.
