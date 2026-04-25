@@ -55,6 +55,8 @@ resources:
   - backend.yaml
   - frontend.yaml
   - ingress.yaml
+  - servicemonitor.yaml
+  - prometheusrule.yaml
 
 # Logical image names → resolved at apply time (see backend.yaml / frontend.yaml).
 images:
