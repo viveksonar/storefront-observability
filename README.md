@@ -1,6 +1,14 @@
 # Storefront Observability
  
 **Live:** https://agoda.viveksonar.in
+
+**Grafana Dashboard (Kubernetes):** https://agoda.viveksonar.in/grafana/goto/bfka8ssrjc16oa?orgId=1
+
+**Grafana Dashboard (Backend Health):** https://agoda.viveksonar.in/grafana/goto/dfka8wgvrhvcwe?orgId=1
+
+**Grafana Username(View Only):** agoda
+
+**Grafana Password:** agoda123
  
 Agoda published an engineering article in February 2026 describing how they built Storefront - a Rust-based reverse proxy that fixes S3 load balancing failures on their VAST storage cluster. The article describes three specific failure modes they encountered and the fixes they implemented.
  
