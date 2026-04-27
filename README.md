@@ -1,10 +1,10 @@
 # Storefront Observability
  
-**Live:** https://agoda.viveksonar.in
+**Live:** <a href="https://agoda.viveksonar.in" target="_blank" rel="noopener noreferrer">https://agoda.viveksonar.in</a>
 
-**Grafana Dashboard (Kubernetes):** https://agoda.viveksonar.in/grafana/goto/bfka8ssrjc16oa?orgId=1
+**Grafana Dashboard (Kubernetes):** <a href="https://agoda.viveksonar.in/grafana/goto/bfka8ssrjc16oa?orgId=1" target="_blank" rel="noopener noreferrer">https://agoda.viveksonar.in/grafana/goto/bfka8ssrjc16oa?orgId=1</a>
 
-**Grafana Dashboard (Backend Health):** https://agoda.viveksonar.in/grafana/goto/dfka8wgvrhvcwe?orgId=1
+**Grafana Dashboard (Backend Health):** <a href="https://agoda.viveksonar.in/grafana/goto/dfka8wgvrhvcwe?orgId=1" target="_blank" rel="noopener noreferrer">https://agoda.viveksonar.in/grafana/goto/dfka8wgvrhvcwe?orgId=1</a>
 
 **Grafana Username(View Only):** agoda
 
