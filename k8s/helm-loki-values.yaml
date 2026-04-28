@@ -1,0 +1,57 @@
+# Grafana Loki — single binary, filesystem storage, minimal sidecars.
+#
+# Install (after `helm repo add grafana https://grafana.github.io/helm-charts`):
+#   helm upgrade --install loki grafana/loki -n monitoring --create-namespace \
+#     -f k8s/helm-loki-values.yaml --wait
+#
+# Same namespace as kube-prometheus-stack Grafana so the data source can use
+# http://loki:3100. Not for high traffic — use object storage + SimpleScalable for production.
+#
+# auth_enabled: false = single-tenant in-cluster only; do not expose Loki publicly.
+
+deploymentMode: SingleBinary
+
+singleBinary:
+  replicas: 1
+  persistence:
+    enabled: true
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# Do not run SimpleScalable write/read/backend when using SingleBinary
+write:
+  replicas: 0
+read:
+  replicas: 0
+backend:
+  replicas: 0
+
+# Smaller footprint for demos / small clusters
+gateway:
+  enabled: false
+chunksCache:
+  enabled: false
+resultsCache:
+  enabled: false
+lokiCanary:
+  enabled: false
+test:
+  enabled: false
+
+loki:
+  auth_enabled: false
+  useTestSchema: true
+  commonConfig:
+    replication_factor: 1
+  storage:
+    type: filesystem
+  # Retention: short default for demo PVC size; increase for real use
+  limits_config:
+    retention_period: 168h
+    reject_old_samples: true
+    reject_old_samples_max_age: 168h

@@ -11,3 +11,7 @@ k8s/deploy.env
 
 frontend/node_modules/
 frontend/dist/
+
+# Local/iterative Grafana dashboard drafts
+k8s/grafana-executive-tpm-storefront.json
+k8s/grafana-tpm-unified-storefront.json

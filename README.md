@@ -94,7 +94,14 @@ storefront-observability/
 │   ├── deploy.env.example                  Host / TLS / image placeholders
 │   ├── ssl-params.env                      SSL-related replacements (gitignored pattern)
 │   ├── apply.sh                            kubectl apply helper
-│   └── install-ingress-nginx.sh            Ingress controller install notes/script
+│   ├── install-loki.sh                    Helm: Loki + Promtail in `monitoring`
+│   ├── helm-loki-values.yaml             Loki single binary (demo-sized PVC)
+│   ├── helm-promtail-values.yaml         Promtail client → Loki
+│   ├── install-tracing.sh                Helm: Tempo + OTel collector in `monitoring`
+│   ├── helm-tempo-values.yaml            Tempo single binary (trace store)
+│   ├── helm-otel-collector-values.yaml   OTel collector → Tempo exporter
+│   ├── helm-monitoring-kps-values.yaml  kube-prometheus-stack + Grafana Loki/Tempo DS
+│   └── install-ingress-nginx.sh          Ingress controller install notes/script
 ├── scripts/
 │   └── dev-local.sh                        Local uvicorn on fixed port
 └── .github/
@@ -111,6 +118,7 @@ The backend runs on FastAPI because the workload is IO-bound and stateless betwe
 | Method | Endpoint | Purpose |
 |--------|----------|---------|
 | GET | `/health` | Liveness - `{"status": "ok"}` |
+| GET | `/prometheus-metrics` | Prometheus text exposition (custom Storefront gauges; not the JSON `/metrics/*` API) — must be on ingress (same path as FastAPI) so in-cluster scrapes and public checks hit the backend, not the SPA |
 | GET | `/metrics/backends` | Per-backend connections, RPS, P99 latency, IO timeouts, health |
 | GET | `/metrics/summary` | Fleet totals - RPS, connections, cross-DC %, timeouts, unhealthy count, distribution score, mode |
 | GET | `/metrics/anomalies` | Active anomaly alerts (connection, cross-DC, latency, etc.) |
@@ -296,6 +304,27 @@ kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
 # In-cluster URL (single host, path routing via ingress):
 # https://agoda.viveksonar.in/grafana
 ```
+
+**Loki (container logs in Grafana).** `k8s/helm-monitoring-kps-values.yaml` provisions a **Loki** data source at `http://loki:3100` (same namespace as Grafana). Install Loki + Promtail after the Grafana chart has that block, or run `helm upgrade --install monitoring ...` again after adding it:
+
+```bash
+helm repo add grafana https://grafana.github.io/helm-charts
+helm repo update grafana
+./k8s/install-loki.sh
+# If Grafana was installed before the Loki data source was added to values:
+# helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring \
+#   --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
+```
+
+In Grafana: **Explore** → data source **Loki**. Example LogQL: `{namespace="storefront-obs"}` or `{namespace="storefront-obs", app="storefront-obs-backend"}`. Loki uses a small PVC and filesystem storage (see `k8s/helm-loki-values.yaml`); for production, move to object storage and a scalable Loki mode. The **Promtail** chart is marked deprecated upstream in favor of **Grafana Alloy**; this setup is fine to get started and can be migrated later.
+
+**Tracing (Tempo + OpenTelemetry Collector).** `k8s/install-tracing.sh` installs Tempo + OTel collector in `monitoring`, then re-applies `k8s/helm-monitoring-kps-values.yaml` so Grafana has a **Tempo** data source at `uid: tempo`.
+
+```bash
+./k8s/install-tracing.sh
+```
+
+Backend tracing exports OTLP/HTTP spans to `http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318` via env in `k8s/backend.yaml`. After backend rollout with a traced image, use Grafana **Explore** → **Tempo** and search `service.name="storefront-obs-backend"`.
 
 `k8s/grafana-proxy-service.yaml` is required for `/grafana`: the main Ingress lives in
 `storefront-obs` but the real Grafana Service is in `monitoring` —Kubernetes Ingress

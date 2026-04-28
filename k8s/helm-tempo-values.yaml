@@ -1,0 +1,33 @@
+# Grafana Tempo (single binary) for trace storage/query in Grafana.
+#
+# Install:
+#   helm upgrade --install tempo grafana/tempo -n monitoring --create-namespace \
+#     -f k8s/helm-tempo-values.yaml --wait
+
+replicas: 1
+
+tempo:
+  reportingEnabled: false
+  retention: 48h
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  storage:
+    trace:
+      backend: local
+      local:
+        path: /var/tempo/traces
+      wal:
+        path: /var/tempo/wal
+
+serviceMonitor:
+  enabled: true
+  additionalLabels:
+    release: monitoring
+
+persistence:
+  enabled: true
+  size: 5Gi
