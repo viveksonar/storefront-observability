@@ -6,6 +6,13 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, PlainTextResponse
+from opentelemetry import trace
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.trace.sampling import ParentBased, TraceIdRatioBased
 from prometheus_client import (
     Gauge,
     REGISTRY,
@@ -76,6 +83,50 @@ app.add_middleware(
 )
 
 
+def _configure_tracing(fastapi_app: FastAPI) -> None:
+    """
+    Enable OpenTelemetry traces when an OTLP endpoint is configured.
+
+    Default endpoint targets the in-cluster collector service installed by
+    k8s/install-tracing.sh.
+    """
+    endpoint = os.environ.get(
+        "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318",
+    )
+    service_name = os.environ.get("OTEL_SERVICE_NAME", "storefront-obs-backend")
+    sample_ratio = float(os.environ.get("OTEL_TRACES_SAMPLER_ARG", "1.0"))
+    sample_ratio = min(max(sample_ratio, 0.0), 1.0)
+
+    resource = Resource.create(
+        {
+            "service.name": service_name,
+            "deployment.environment": os.environ.get("ENVIRONMENT", "dev"),
+        }
+    )
+    tracer_provider = TracerProvider(
+        resource=resource,
+        sampler=ParentBased(TraceIdRatioBased(sample_ratio)),
+    )
+    tracer_provider.add_span_processor(
+        BatchSpanProcessor(
+            OTLPSpanExporter(
+                endpoint=f"{endpoint.rstrip('/')}/v1/traces",
+            )
+        )
+    )
+    trace.set_tracer_provider(tracer_provider)
+    FastAPIInstrumentor.instrument_app(
+        fastapi_app,
+        tracer_provider=tracer_provider,
+        excluded_urls="/health,/prometheus-metrics",
+    )
+    logger.info("Tracing enabled: OTLP HTTP exporter to %s", endpoint)
+
+
+_configure_tracing(app)
+
+
 @app.middleware("http")
 async def api_errors_return_json(request: Request, call_next):
     """Prevent HTML 500 bodies — frontend fetchJson expects application/json."""
@@ -99,16 +150,14 @@ async def api_errors_return_json(request: Request, call_next):
 
 sim = MetricSimulator()
 
-@app.get("/health")
-def health():
-    return {"status": "ok"}
 
-@app.get("/metrics/backends")
-def get_backends():
+def _sync_storefront_prometheus_gauges() -> dict:
     """
-    Per-backend connection counts, request distribution, and health.
-    Mirrors what a TPM owning Storefront would monitor after the
-    DNS load-balancing fix (Storefront article, Feb 2026).
+    One source of truth for the simulator tick + storefront_* Prometheus gauges.
+
+    Called from GET /metrics/backends and on every /prometheus-metrics scrape so Grafana
+    sees the same numbers as the UI even when no browser is open (previously gauges only
+    updated when the frontend polled /metrics/backends).
     """
     data = sim.get_backend_metrics()
     backends = data.get("backends", [])
@@ -137,6 +186,21 @@ def get_backends():
 
     storefront_distribution_score.set(distribution_score)
     return data
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/metrics/backends")
+def get_backends():
+    """
+    Per-backend connection counts, request distribution, and health.
+    Mirrors what a TPM owning Storefront would monitor after the
+    DNS load-balancing fix (Storefront article, Feb 2026).
+    """
+    return _sync_storefront_prometheus_gauges()
 
 @app.get("/metrics/anomalies")
 def get_anomalies():
@@ -254,8 +318,16 @@ def incident_report(incident_id: int):
     return md
 
 
-metrics_app = make_asgi_app()
-app.mount("/prometheus-metrics", metrics_app)
+_metrics_asgi = make_asgi_app()
+
+
+async def _prometheus_metrics_with_gauge_refresh(scope, receive, send):
+    if scope.get("type") == "http":
+        _sync_storefront_prometheus_gauges()
+    await _metrics_asgi(scope, receive, send)
+
+
+app.mount("/prometheus-metrics", _prometheus_metrics_with_gauge_refresh)
 
 
 if __name__ == "__main__":

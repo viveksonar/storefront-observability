@@ -19,6 +19,31 @@ grafana:
     GF_SERVER_ROOT_URL: https://agoda.viveksonar.in/grafana
     GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     GF_SERVER_DOMAIN: agoda.viveksonar.in
+  # Loki in `monitoring` (helm-loki-values.yaml + install-loki.sh). Explore → Loki.
+  additionalDataSources:
+    - name: Loki
+      type: loki
+      access: proxy
+      uid: loki
+      url: http://loki:3100
+      isDefault: false
+      jsonData:
+        maxLines: 1000
+    - name: Tempo
+      type: tempo
+      access: proxy
+      uid: tempo
+      url: http://tempo:3200
+      isDefault: false
+      jsonData:
+        httpMethod: GET
+        serviceMap:
+          datasourceUid: prometheus
+        tracesToLogsV2:
+          datasourceUid: loki
+          filterByTraceID: true
+          spanStartTimeShift: "-1m"
+          spanEndTimeShift: "1m"
 # Core Kubernetes scrapes (node_exporter, kube-state-metrics, kubelet/cAdvisor, etc.)
 kubeStateMetrics:
   enabled: true
