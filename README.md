@@ -94,14 +94,14 @@ storefront-observability/
 │   ├── deploy.env.example                  Host / TLS / image placeholders
 │   ├── ssl-params.env                      SSL-related replacements (gitignored pattern)
 │   ├── apply.sh                            kubectl apply helper
-│   ├── install-loki.sh                    Helm: Loki + Promtail in `monitoring`
-│   ├── helm-loki-values.yaml             Loki single binary (demo-sized PVC)
-│   ├── helm-promtail-values.yaml         Promtail client → Loki
-│   ├── install-tracing.sh                Helm: Tempo + OTel collector in `monitoring`
-│   ├── helm-tempo-values.yaml            Tempo single binary (trace store)
-│   ├── helm-otel-collector-values.yaml   OTel collector → Tempo exporter
-│   ├── helm-monitoring-kps-values.yaml  kube-prometheus-stack + Grafana Loki/Tempo DS
-│   └── install-ingress-nginx.sh          Ingress controller install notes/script
+│   ├── install-loki.sh                     Helm: Loki + Promtail in `monitoring`
+│   ├── helm-loki-values.yaml               Loki single binary (demo-sized PVC)
+│   ├── helm-promtail-values.yaml           Promtail client → Loki
+│   ├── install-tracing.sh                  Helm: Tempo + OTel collector in `monitoring`
+│   ├── helm-tempo-values.yaml              Tempo single binary (trace store)
+│   ├── helm-otel-collector-values.yaml     OTel collector → Tempo exporter
+│   ├── helm-monitoring-kps-values.yaml     kube-prometheus-stack + Grafana Loki/Tempo DS
+│   └── install-ingress-nginx.sh            Ingress controller install notes/script
 ├── scripts/
 │   └── dev-local.sh                        Local uvicorn on fixed port
 └── .github/
