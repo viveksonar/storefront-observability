@@ -9,6 +9,7 @@ export default defineConfig({
     proxy: {
       // Longest prefixes first — some proxy stacks match the first rule only.
       '/metrics/forecast': { target: backend, changeOrigin: true },
+      '/prometheus-metrics': { target: backend, changeOrigin: true },
       '/metrics': { target: backend, changeOrigin: true },
       '/forecast': { target: backend, changeOrigin: true },
       '/simulate': { target: backend, changeOrigin: true },

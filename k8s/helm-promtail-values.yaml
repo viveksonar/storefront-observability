@@ -1,0 +1,25 @@
+# Promtail — ship Kubernetes pod logs to Loki (DaemonSet).
+#
+# Requires Loki in the same namespace (see k8s/helm-loki-values.yaml). Install after Loki.
+#
+#   helm upgrade --install promtail grafana/promtail -n monitoring \
+#     -f k8s/helm-promtail-values.yaml --wait
+#
+# Push goes to the Loki single-binary Service (port 3100), not the nginx gateway.
+
+config:
+  clients:
+    - url: http://loki:3100/loki/api/v1/push
+
+# Light limits for small nodes
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 256Mi
+
+serviceMonitor:
+  enabled: true
+  labels:
+    release: monitoring
