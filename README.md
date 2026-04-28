@@ -167,8 +167,7 @@ Deployed on **DigitalOcean Kubernetes**, **Singapore** region (**for lower laten
 
 Every configuration decision in the deployment manifests is intentional.
 
-<img alt="Kubernetes" src="https://github.com/user-attachments/assets/d689681b-8e9f-4e76-bb9c-f0403644dc63" />
-
+<img src="https://github.com/user-attachments/assets/cf3a090f-bbfc-4eaa-8fae-1d3992e2f8e8" />
 
 
 
