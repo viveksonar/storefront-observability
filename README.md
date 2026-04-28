@@ -241,19 +241,19 @@ VITE_PROXY_TARGET=http://127.0.0.1:<port> npm run dev
 (restart npm run dev after changing env.)
 
 ---
-## Prometheus & Grafana
+## Observability Setup
+
+### Prometheus & Grafana
 
 ```bash
-# Install kube-prometheus-stack
-helm repo add prometheus-community \
-  https://prometheus-community.github.io/helm-charts
+# Add chart repo
+helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
 helm repo update
 
-# Values live in repo: k8s/helm-monitoring-kps-values.yaml — uses the block key
-# grafana.grafana.ini (not a nested grafana: key) so /grafana subpath and redirects
-# (e.g. /grafana/login) stay on-path instead of redirecting the browser to /login
-# and the SPA. Add --skip-crds only if Prometheus operator CRDs are already in the
-# cluster (e.g. from a prior install or the CI pre-apply).
+# Install kube-prometheus-stack
+# Values file: k8s/helm-monitoring-kps-values.yaml
+# Uses grafana.grafana.ini (not a nested grafana: key) so /grafana subpath works correctly.
+# Add --skip-crds only if Prometheus Operator CRDs are already in the cluster.
 helm upgrade --install monitoring \
   prometheus-community/kube-prometheus-stack \
   --namespace monitoring \
@@ -261,84 +261,84 @@ helm upgrade --install monitoring \
   -f k8s/helm-monitoring-kps-values.yaml \
   --wait --timeout=15m
 
-# The three false flags are critical — without them Prometheus
-# ignores ServiceMonitors, PodMonitors, and PrometheusRules
-# outside the monitoring namespace.
-
 # Apply Storefront monitoring config
 kubectl apply -k k8s
 
-# If `kubectl apply -k k8s` errors with "no matches for kind ServiceMonitor / PrometheusRule",
-# the cluster does not have Prometheus Operator CRDs yet. Install kube-prometheus-stack first
-# (recommended), or apply the upstream CRDs for those two kinds. The GitHub Actions deploy
-# workflow applies the pinned CRD manifests automatically before `kubectl apply -k k8s/`.
-
 # Verify Prometheus is scraping the backend
 kubectl port-forward -n monitoring svc/monitoring-prometheus 9090:9090
-# Visit localhost:9090/targets — storefront-obs-backend should show UP
+# → localhost:9090/targets — storefront-obs-backend should show UP
 
-# Import Grafana dashboard
+# Access Grafana
 kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
-# Visit localhost:3000 (admin/storefront123)
-# Optional manual import: Dashboards → Import → paste k8s/grafana-dashboard.json
-
-# The **Storefront** dashboard is also provisioned automatically: `kustomize` builds
-# a ConfigMap (`grafana-storefront-observability`) in `storefront-obs` with
-# `grafana_dashboard: "1"`, which the kube-prometheus Grafana sidecar loads (same
-# mechanism as the built-in Kubernetes dashboards). After `kubectl apply -k k8s`, open
-# Grafana → **Dashboards** → **Browse** and search for **Storefront** (uid
-# `storefront-observability-v1`). The bundled cluster dashboards live under
-# e.g. **Kubernetes / Compute** — use **Browse** if the home page looks empty.
-#
-# A second repo-provisioned dashboard **Kubernetes cluster — capacity snapshot**
-# (`k8s/grafana-k8s-cluster-overview.json`, uid `k8s-cluster-overview-v1`) uses
-# kube-state-metrics, node_exporter, and cAdvisor-style series for a quick cluster view.
-#
-# Prometheus is configured in `k8s/helm-monitoring-kps-values.yaml` to keep
-# kube-state-metrics + node_exporter enabled and to use empty ServiceMonitor /
-# PodMonitor namespace selectors so Prometheus discovers monitors in **every**
-# namespace (including `storefront-obs` for Storefront). Re-apply Helm after editing:
-#   helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
-
-# In-cluster URL (single host, path routing via ingress):
-# https://agoda.viveksonar.in/grafana
+# → localhost:3000 (admin / storefront123)
 ```
 
-**Loki (container logs in Grafana).** `k8s/helm-monitoring-kps-values.yaml` provisions a **Loki** data source at `http://loki:3100` (same namespace as Grafana). Install Loki + Promtail after the Grafana chart has that block, or run `helm upgrade --install monitoring ...` again after adding it:
+### Dashboards
+
+Two dashboards are provisioned automatically via Kustomize ConfigMap (`grafana-storefront-observability`):
+
+| Dashboard | UID | Source |
+|---|---|---|
+| Storefront | `storefront-observability-v1` | `k8s/grafana-dashboard.json` |
+| Kubernetes cluster — capacity snapshot | `k8s-cluster-overview-v1` | `k8s/grafana-k8s-cluster-overview.json` |
+
+Browse via **Dashboards → Browse** and search by name. Built-in cluster dashboards are under **Kubernetes / Compute**.
+
+> **If `kubectl apply -k k8s` errors on ServiceMonitor / PrometheusRule:** CRDs are missing. Install kube-prometheus-stack first (recommended) or apply the upstream CRDs manually. The GitHub Actions workflow handles this automatically.
+
+---
+
+### Loki (Container Logs)
 
 ```bash
 helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update grafana
 ./k8s/install-loki.sh
-# If Grafana was installed before the Loki data source was added to values:
-# helm upgrade --install monitoring prometheus-community/kube-prometheus-stack -n monitoring \
-#   --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
+
+# If Grafana was installed before the Loki data source was added, re-apply:
+helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+  -n monitoring --skip-crds -f k8s/helm-monitoring-kps-values.yaml --wait
 ```
 
-In Grafana: **Explore** → data source **Loki**. Example LogQL: `{namespace="storefront-obs"}` or `{namespace="storefront-obs", app="storefront-obs-backend"}`. Loki uses a small PVC and filesystem storage (see `k8s/helm-loki-values.yaml`); for production, move to object storage and a scalable Loki mode. The **Promtail** chart is marked deprecated upstream in favor of **Grafana Alloy**; this setup is fine to get started and can be migrated later.
+In Grafana: **Explore → Loki**. Example LogQL:
 
-**Tracing (Tempo + OpenTelemetry Collector).** `k8s/install-tracing.sh` installs Tempo + OTel collector in `monitoring`, then re-applies `k8s/helm-monitoring-kps-values.yaml` so Grafana has a **Tempo** data source at `uid: tempo`.
+```logql
+{namespace="storefront-obs"}
+{namespace="storefront-obs", app="storefront-obs-backend"}
+```
+
+Loki uses a small PVC with filesystem storage (`k8s/helm-loki-values.yaml`). For production, switch to object storage with scalable Loki mode. Promtail is deprecated upstream in favor of Grafana Alloy — fine for local use, migrate when ready.
+
+---
+
+### Tracing (Tempo + OpenTelemetry Collector)
 
 ```bash
 ./k8s/install-tracing.sh
 ```
 
-Backend tracing exports OTLP/HTTP spans to `http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318` via env in `k8s/backend.yaml`. After backend rollout with a traced image, use Grafana **Explore** → **Tempo** and search `service.name="storefront-obs-backend"`.
+This installs Tempo and the OTel collector in `monitoring`, then re-applies `helm-monitoring-kps-values.yaml` so Grafana gets a **Tempo** data source (`uid: tempo`).
 
-`k8s/grafana-proxy-service.yaml` is required for `/grafana`: the main Ingress lives in
-`storefront-obs` but the real Grafana Service is in `monitoring` —Kubernetes Ingress
-cannot cross namespaces, so a same-namespace `ExternalName` Service points at
-`monitoring-grafana.monitoring.svc.cluster.local`. If you used a different Helm
-release name than `monitoring`, change that FQDN to `<release-grafana>.monitoring.svc.cluster.local`.
+The backend ships OTLP/HTTP spans to:
+```
+http://otel-collector-opentelemetry-collector.monitoring.svc.cluster.local:4318
+```
+(configured via env in `k8s/backend.yaml`).
 
-**503 on `/grafana`:** usually the Ingress had no in-namespace backend, Grafana pods
-in `monitoring` are not ready, or the Helm FQDN above does not match your release name.
+After rolling out a traced image, query traces in Grafana: **Explore → Tempo → `service.name="storefront-obs-backend"`**.
 
-**Redirect to `/login` (main site) instead of `/grafana/login`:** Grafana was not
-given a valid `grafana.ini` `root_url` + `serve_from_sub_path` (a wrong `helm --set`
-path is a common cause). After fixing with `k8s/helm-monitoring-kps-values.yaml` and
-`helm upgrade`, `https://agoda.viveksonar.in/grafana/login` should return 200 on
-that path, not 302 to `/login`.
+---
+
+### Ingress & Cross-Namespace Routing
+
+`k8s/grafana-proxy-service.yaml` provides the `/grafana` path: the main Ingress lives in `storefront-obs` but Grafana's Service is in `monitoring`. Kubernetes Ingress can't cross namespaces, so an `ExternalName` Service bridges them:
+
+```
+monitoring-grafana.monitoring.svc.cluster.local
+```
+
+If your Helm release name isn't `monitoring`, update the FQDN to `<release-name>-grafana.monitoring.svc.cluster.local`.
+
 
 ---
 ## Every design decision and its source
